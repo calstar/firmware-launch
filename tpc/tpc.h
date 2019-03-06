@@ -1,9 +1,5 @@
-#ifdef tpc
-
 //#include "pins.h"
 
-int run() {
+int main() {
 
 }
-
-#endif

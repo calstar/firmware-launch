@@ -1,9 +1,5 @@
-#ifdef bb
-
 #include "pins.h"
 
-int run() {
+int main() {
 
 }
-
-#endif
