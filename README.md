@@ -15,5 +15,5 @@ For firmware used on boards during launch.
 * `flatbuffers/` contains the necessary flatbuffer includes and should not be modified.
 * After a build, `out/` will contain the output binary.
 
-# Flatbufffers
+# Flatbuffers
 * The schemas are under `general/*.fbs`. Edit them and the next time you run a `make build board=$BOARD` command they will be recompiled by the `flatc` executable in `general/`.
