@@ -2,7 +2,7 @@ namespace Calstar;
 
 /* This is over RS422 only so it can be larger */
 
-enum UplinkType : byte { BlackPowderOn = 0, BlackPowderOff = 1 }
+enum UplinkType : byte { FCOn = 0, FCOff = 1, BlackPowderOn = 2, BlackPowderOff = 3 }
 table UplinkMsg {
     Type : UplinkType;
     BP : [bool];
