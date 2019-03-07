@@ -1,9 +1,5 @@
-#ifdef gs
-
 #include "pins.h"
 
-int run() {
+int main() {
 
 }
-
-#endif

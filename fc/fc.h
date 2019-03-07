@@ -1,4 +1,3 @@
-#define fc
 #ifdef fc
 
 #include "pins.h"
@@ -153,5 +152,3 @@ int run() {
 
     timer.stop();
 }
-
-#endif
