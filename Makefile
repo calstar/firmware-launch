@@ -7,6 +7,13 @@ outdir = out/
 outname = $(board).bin
 outpath = $(outdir)$(outname)
 
+FLATC = general/flatc
+
+OS := $(shell uname)
+ifeq ($(OS), Darwin)
+FLATC = general/flatc_mac
+endif
+
 validate:
 ifndef board
 		$(error Board is not set to one of: bb, gs, fc, tpc)
@@ -21,7 +28,7 @@ flash: validate
 	st-flash write $(outpath) 0x8000000
 
 %_generated.h: general/%.fbs
-	general/flatc --cpp $<
+	$(FLATC) --cpp $<
 
 build-all:
 	make build board=bb

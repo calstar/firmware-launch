@@ -1,3 +1,8 @@
+#include "mbed.h"
+#include "msg_downlink_generated.h"
+#include "msg_uplink_generated.h"
+#include "msg_fc_update_generated.h"
+
 #include "pins.h"
 
 #define DEBUG_UART_BAUDRATE (115200)
@@ -31,7 +36,7 @@ int main() {
     debug_uart.baud(DEBUG_UART_BAUDRATE);
     debug_uart.set_blocking(false);
     debug_uart.printf("---- CalSTAR Flight Computer ----\r\n");
-    
+
     buildCurrentMessage();
 
     us_timestamp_t last_msg_send_us = msgTimer.read_high_resolution_us();
