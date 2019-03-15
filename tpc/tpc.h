@@ -1,3 +1,7 @@
+#include "msg_downlink_generated.h"
+#include "msg_uplink_generated.h"
+#include "msg_fc_update_generated.h"
+
 #include "mbed.h"
 #include "pins.h"
 
@@ -17,22 +21,30 @@ Timer msgTimer;
 FlatBufferBuilder builder(BUF_SIZE);
 // FCUpdateMsg fcLatestData;
 bool fcPowered = false;
-int main() {
-    DigitalOut fcPower(FC_SWITCH);
+
+DigitalOut fcPower(FC_SWITCH);
+
+Serial rs422(RS422_TX, RS422_RX);
+Serial debug_uart(DEBUG_TX, DEBUG_RX);
+
+us_timestamp_t last_msg_send_us;
+
+void start() {
     fcPower = 0;
 
     msgTimer.start();
 
-    Serial rs422(RS422_TX, RS422_RX);
     rs422.baud(RS422_BAUDRATE);
     rs422.set_blocking(false);
 
-    Serial debug_uart(DEBUG_TX, DEBUG_RX);
     debug_uart.baud(DEBUG_UART_BAUDRATE);
     debug_uart.set_blocking(false);
     debug_uart.printf("---- CalSTAR Telemetry/Power Control ----\r\n");
 
-    us_timestamp_t last_msg_send_us = msgTimer.read_high_resolution_us();
+    last_msg_send_us = msgTimer.read_high_resolution_us();
+}
+
+void loop() {
     while (true) {
         // Send a message every MSG_SEND_INTERVAL_US microseconds
         us_timestamp_t current_time = msgTimer.read_high_resolution_us();
@@ -62,6 +74,13 @@ int main() {
             }
         }
     }
+}
+
+int main() {
+  start();
+  while (1) {
+    loop();
+  }
 }
 
 const UplinkMsg *getUplinkMsg(char c) {

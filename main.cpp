@@ -1,7 +1,3 @@
-#include "msg_downlink_generated.h"
-#include "msg_uplink_generated.h"
-#include "msg_fc_update_generated.h"
-
 #if !defined(bb) && !defined(fc) && !defined(gs) && !defined(tpc)
 #error "Must define one of: bb, fc, gs, tpc"
 #endif
