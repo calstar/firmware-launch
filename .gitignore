@@ -4,6 +4,7 @@
 obj/
 
 *.swp
+*_generated.h
 
 mbed-os/
 BUILD/
