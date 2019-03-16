@@ -20,7 +20,7 @@ void buildCurrentMessage();
 Timer msgTimer;
 FlatBufferBuilder builder(BUF_SIZE);
 // FCUpdateMsg fcLatestData;
-bool fcPowered = false;
+// bool fcPowered = false;
 
 DigitalOut fcPower(FC_SWITCH);
 
@@ -45,33 +45,32 @@ void start() {
 }
 
 void loop() {
-    while (true) {
-        // Send a message every MSG_SEND_INTERVAL_US microseconds
-        us_timestamp_t current_time = msgTimer.read_high_resolution_us();
-        if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
-            buildCurrentMessage();
+    // Send a message every MSG_SEND_INTERVAL_US microseconds
+    us_timestamp_t current_time = msgTimer.read_high_resolution_us();
+    if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
+        buildCurrentMessage();
 
-            debug_uart.printf("Sending downlink with fcPowered=%d\r\n", fcPowered);
-            // TODO: send over radio
+        debug_uart.printf("Sending downlink with fcPowered=%d\r\n", (int)fcPower);
+        // TODO: send over radio
 
-            last_msg_send_us = current_time;
+        last_msg_send_us = current_time;
+    }
+    // Always read messages
+    if (rs422.readable()) {
+        // Read into message type
+        const FCUpdateMsg *msg = getFCUpdateMsg(rs422.getc());
+        if (msg) {
+            // fcLatestData = msg;
         }
-        // Always read messages
-        if (rs422.readable()) {
-            // Read into message type
-            const FCUpdateMsg *msg = getFCUpdateMsg(rs422.getc());
-            if (msg) {
-                // fcLatestData = msg;
-            }
-        }
+    }
 
-        if (debug_uart.readable()) {
-            char c = debug_uart.getc();
-            if (c == 'p') {
-                // toggle FC power
-                fcPowered ^= true;
-                fcPower = fcPowered ? 1 : 0;
-            }
+    if (debug_uart.readable()) {
+        char c = debug_uart.getc();
+        if (c == 'p') {
+            // toggle FC power
+            // fcPowered ^= true;
+            // fcPower = fcPowered ? 1 : 0;
+            fcPower = 1 - fcPower;
         }
     }
 }
@@ -131,7 +130,7 @@ void buildCurrentMessage() {
         false, false);
     Offset<DownlinkMsg> message = CreateDownlinkMsg(builder,
         TPCState_Pad,
-        fcPowered,
+        (int)fcPower,
         fcUpdateMsg, // TODO: use the latest FC data
         builder.CreateString("gps test"),
         123);
