@@ -4,11 +4,14 @@
 
 #include "mbed.h"
 #include "pins.h"
+#include "RFM69/RFM69.hpp"
 
 #define DEBUG_UART_BAUDRATE (115200)
 #define RS422_BAUDRATE (115200)
 #define MSG_SEND_INTERVAL_US (250000u) // 250*1000us = 250ms
 #define BUF_SIZE (256)
+// random 16 bytes that must be the same across all nodes
+#define ENCRYPT_KEY ("CALSTARENCRYPTKE")
 
 using namespace flatbuffers;
 using namespace Calstar;
@@ -29,6 +32,8 @@ Serial debug_uart(DEBUG_TX, DEBUG_RX);
 
 us_timestamp_t last_msg_send_us;
 
+RFM69 radio(SPI1_MOSI, SPI1_MISO, SPI1_SCLK, SPI1_SSEL, RADIO_RST, true);
+
 void start() {
     fcPower = 0;
 
@@ -42,6 +47,18 @@ void start() {
     debug_uart.printf("---- CalSTAR Telemetry/Power Control ----\r\n");
 
     last_msg_send_us = msgTimer.read_high_resolution_us();
+
+    
+    radio.reset();
+    debug_uart.printf("Radio reset complete.\r\n");
+
+    radio.init();
+    radio.setAESEncryption(ENCRYPT_KEY, strlen(ENCRYPT_KEY));
+
+    radio.setHighPowerSettings(true);
+    radio.setPowerDBm(20);
+
+    debug_uart.printf("Radio init complete.\r\n");
 }
 
 void loop() {
@@ -50,8 +67,11 @@ void loop() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         buildCurrentMessage();
 
-        debug_uart.printf("Sending downlink with fcPowered=%d\r\n", (int)fcPower);
-        // TODO: send over radio
+        debug_uart.printf("Sending radio downlink with fcPowered=%d\r\n", (int)fcPower);
+        // Send over radio
+        uint8_t *buf = builder.GetBufferPointer();
+        int size = builder.GetSize();
+        radio.send(buf, size);
 
         last_msg_send_us = current_time;
     }
@@ -61,6 +81,8 @@ void loop() {
         const FCUpdateMsg *msg = getFCUpdateMsg(rs422.getc());
         if (msg) {
             // fcLatestData = msg;
+            // TODO: not sure how to convert const FCUpdateMsg* back into something that can be put into another message
+            // (e.g. an Offset<FCUpdateMsg>)
         }
     }
 
@@ -68,9 +90,36 @@ void loop() {
         char c = debug_uart.getc();
         if (c == 'p') {
             // toggle FC power
-            // fcPowered ^= true;
-            // fcPower = fcPowered ? 1 : 0;
             fcPower = 1 - fcPower;
+            if (fcPower) {
+                debug_uart.printf("Turned on FC power.\r\n");
+            } else {
+                debug_uart.printf("Turned off FC power.\r\n");
+            }
+        }
+    }
+
+    static char radio_rx_buf[256];
+    int num_bytes_received = radio.receive(radio_rx_buf, sizeof(radio_rx_buf));
+    // We skip the first byte; everything else is valid.
+    if (num_bytes_received > 1) {
+        debug_uart.printf("Received radio uplink of size %d [RSSI=%d].\r\n",
+            num_bytes_received - 1, radio.getRSSI());
+    }
+    for (int i = 1; i < num_bytes_received; i++) {
+        const UplinkMsg *msg = getUplinkMsg(radio_rx_buf[i]);
+        if (msg) {
+            // Received an uplink over radio -- FCOn/FCOff is for us, BlackPowderOn/BlackPowderOff is for FC
+            if (msg->Type() == UplinkType_FCOn) {
+                fcPower = 1;
+                debug_uart.printf("Turned on FC power.\r\n");
+            } else if (msg->Type() == UplinkType_FCOff) {
+                fcPower = 0;
+                debug_uart.printf("Turned off FC power.\r\n");
+            } else {
+                // For other messages we just forward to FC.
+                // TODO: send over RS422 (not sure how to convert a const UplinkMsg* back to a buffer)
+            }
         }
     }
 }
