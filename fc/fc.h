@@ -37,11 +37,6 @@ void loop() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         uint8_t* buf = builder.GetBufferPointer();
         int size = builder.GetSize();
-
-        // Write the size of the message
-        // void* size_ptr = (void*)(&size);
-        // rs422.write((uint8_t*)size_ptr, sizeof(size), NULL);
-        // then write the message
         rs422.write(buf, size, NULL);
 
         // also just toggle the red LED at this point
