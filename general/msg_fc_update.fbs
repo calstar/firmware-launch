@@ -4,6 +4,7 @@ namespace Calstar;
 
 enum FCState : byte { Pad = 0, Flight = 1 /* add others to match the state machine in the FC firmware */ }
 table FCUpdateMsg {
+    Bytes : uint8;
     State : FCState;
     AccelX : float;
     AccelY : float;

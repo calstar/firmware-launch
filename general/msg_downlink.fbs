@@ -6,6 +6,7 @@ namespace Calstar;
 
 enum TPCState : byte { Pad = 0, Flight = 1 /* add others to match the state machine in the TPC firmware */ }
 table DownlinkMsg {
+    Bytes : uint8;
     State : TPCState;
     FCPowered : bool;
     FCMsg : FCUpdateMsg;
