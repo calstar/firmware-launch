@@ -67,7 +67,9 @@ bool retry = true;
 int32_t t_tx_led_on;
 int32_t t_rx_led_on;
 
-std::vector<std::tuple<uint32_t, uint8_t *, uint8_t>> acks_remaining;
+uint8_t frame_id;
+std::vector<std::tuple<int32_t, uint8_t *, uint8_t>> acks_remaining;
+FlatBufferBuilder builder(FLATBUF_BUF_SIZE);
 
 /***************Function Declarations***********/
 void start();
@@ -99,6 +101,8 @@ void start() {
   t.start();
   t_tx_led_on = t.read_ms();
   t_rx_led_on = t.read_ms();
+
+  frame_id = 0;
 }
 
 void loop() {
@@ -145,57 +149,83 @@ void loop() {
   if (num_bytes_rxd > 1) {
     rx_buf[num_bytes_rxd] = '\0';
     rx_led = 1;
-    pc.printf("![RSSI=%d, bytes: %d]! %s\r\n", radio.getRSSI(),
-              num_bytes_rxd - 1, rx_buf + 1);
     t_rx_led_on = t.read_ms();
+    const DownlinkMsg *msg = getDownlinkMsg(rx_buf + 1, num_bytes_rxd - 1);
+    if (msg != nullptr) {
+      pc.printf("![RSSI=%d, bytes: %d]! %s\r\n", radio.getRSSI(),
+                num_bytes_rxd - 1, rx_buf + 1);
+    }
   }
 }
 
 bool sendUplinkMsg(const std::string &str, bool with_ack) {
-  radio.send(line.c_str(), line.length());
+  builder.Reset();
+
+  uint8_t bps[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  bps[4] = 1;
+  auto blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
+
+  Offset<UplinkMsg> msg = CreateUplinkMsg(
+      builder, 1, UplinkType_FCOff, blackpowder_offset, frame_id, with_ack);
+  builder.Finish(msg);
+
+  uint8_t bytes = (uint8_t)builder.GetSize();
+  builder.Reset();
+  msg = CreateUplinkMsg(builder, bytes, UplinkType_FCOff, blackpowder_offset,
+                        frame_id, with_ack);
+  builder.Finish(msg);
+
+  uint8_t *buf = builder.GetBufferPointer();
+  int32_t size = builder.GetSize();
+
+  acks_remaining.push_back({size, buf, frame_id});
+
+  radio.send(buf, size);
+
+  ++frame_id;
 }
 
 const DownlinkMsg *getDownlinkMsg(uint8_t *data, int32_t data_len) {
-    static uint8_t buf[FLATBUF_BUF_SIZE];
-    static uint8_t return_buf[FLATBUF_BUF_SIZE];
-    static uint32_t len = 0;
+  static uint8_t buf[FLATBUF_BUF_SIZE];
+  static uint8_t return_buf[FLATBUF_BUF_SIZE];
+  static uint32_t len = 0;
 
-    uint32_t bytes_left = FLATBUF_BUF_SIZE - len;
+  uint32_t bytes_left = FLATBUF_BUF_SIZE - len;
 
-    if (data_len > bytes_left) {
-        uint32_t num_move = data_len - bytes_left;
-        memmove(buf, buf + num_move, len - num_move);
-        memcpy(buf + len - num_move, data, data_len); 
-        len = FLATBUF_BUF_SIZE;
-    } else {
-        memcpy(buf + len, data, data_len);
-        len += data_len;
+  if (data_len > bytes_left) {
+    uint32_t num_move = data_len - bytes_left;
+    memmove(buf, buf + num_move, len - num_move);
+    memcpy(buf + len - num_move, data, data_len);
+    len = FLATBUF_BUF_SIZE;
+  } else {
+    memcpy(buf + len, data, data_len);
+    len += data_len;
+  }
+
+  Verifier verifier(buf, len);
+  if (VerifyDownlinkMsgBuffer(verifier)) {
+    memcpy(return_buf, buf, len);
+    const DownlinkMsg *output = GetDownlinkMsg(return_buf);
+
+    uint8_t expected_num_bytes = output->Bytes();
+    uint8_t actual_len = len;
+    if (len < expected_num_bytes) {
+      return NULL;
+    } else if (len > expected_num_bytes) {
+      Verifier smaller_verifier(buf, expected_num_bytes);
+      if (VerifyDownlinkMsgBuffer(smaller_verifier)) {
+        actual_len = expected_num_bytes;
+        memset(return_buf + actual_len, 0, len - actual_len);
+      } else {
+        return nullptr;
+      }
     }
 
-    Verifier verifier(buf, len);
-    if (VerifyDownlinkMsgBuffer(verifier)) {
-        memcpy(return_buf, buf, len);
-        const DownlinkMsg *output = GetDownlinkMsg(return_buf);
+    memmove(buf, buf + actual_len, FLATBUF_BUF_SIZE - actual_len);
+    len -= actual_len;
+    memset(buf + len, 0, FLATBUF_BUF_SIZE - len);
 
-        uint8_t expected_num_bytes = output->Bytes();
-        uint8_t actual_len = len;
-        if (len < expected_num_bytes) {
-            return NULL;
-        } else if (len > expected_num_bytes) {
-            Verifier smaller_verifier(buf, expected_num_bytes);
-            if (VerifyDownlinkMsgBuffer(smaller_verifier)) {
-                actual_len = expected_num_bytes;
-                memset(return_buf + actual_len, 0, len - actual_len);
-            } else {
-                return nullptr;
-            }
-        }
-
-        memmove(buf, buf + actual_len, FLATBUF_BUF_SIZE - actual_len);
-        len -= actual_len;
-        memset(buf + len, 0, FLATBUF_BUF_SIZE - len);
-
-        return output;
-    }
-    return nullptr;
+    return output;
+  }
+  return nullptr;
 }
