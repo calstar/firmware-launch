@@ -30,7 +30,7 @@
 #include "RFM69/RFM69.hpp"
 #include "USBSerial.h"
 #include <string>
-#include <vector>
+#include <unordered_map>
 
 using namespace flatbuffers;
 using namespace Calstar;
@@ -43,9 +43,12 @@ using namespace Calstar;
 
 #define LED_ON_TIME_MS (50)
 
-#define RX_BUF_LEN (128)
-
+#define RX_BUF_LEN (256)
 #define FLATBUF_BUF_SIZE (256)
+
+// resend messages for which have not received acks at 50ms intervals
+#define ACK_CHECK_INTERVAL_SEC (0.05f)
+#define MAX_NUM_RETRIES (50)
 
 /****************Global Variables***************/
 DigitalOut rx_led(LED_RX);
@@ -68,7 +71,14 @@ int32_t t_tx_led_on;
 int32_t t_rx_led_on;
 
 uint8_t frame_id;
-std::vector<std::tuple<int32_t, uint8_t *, uint8_t>> acks_remaining;
+
+// USB does not work with LowPowerTicker
+Ticker ack_checker;
+
+// frame_id, <buffer size, buffer, number of retries>
+std::unordered_map<uint8_t, std::tuple<int32_t, uint8_t *, uint8_t>>
+    acks_remaining;
+
 FlatBufferBuilder builder(FLATBUF_BUF_SIZE);
 
 /***************Function Declarations***********/
@@ -76,6 +86,8 @@ void start();
 void loop();
 bool sendUplinkMsg(const std::string &str, bool with_ack);
 const DownlinkMsg *getDownlinkMsg(uint8_t *data, int32_t data_len);
+void resend_msgs();
+void sendAck(uint8_t frame_id);
 
 int main() {
   start();
@@ -103,6 +115,8 @@ void start() {
   t_rx_led_on = t.read_ms();
 
   frame_id = 0;
+
+  ack_checker.attach(&resend_msgs, ACK_CHECK_INTERVAL_SEC);
 }
 
 void loop() {
@@ -124,8 +138,8 @@ void loop() {
         pc.printf("%s\r\n", line.c_str());
       } else {
         if (retry) {
-          pc.printf("![SENDING ONCE (RETRY TODO) '%s', bytes: %d]!\r\n",
-                    line.c_str(), line.length());
+          pc.printf("![SENDING WITH RETRY '%s', bytes: %d]!\r\n", line.c_str(),
+                    line.length());
           line += '\n';
           tx_led = 1;
           sendUplinkMsg(line, true);
@@ -152,8 +166,21 @@ void loop() {
     t_rx_led_on = t.read_ms();
     const DownlinkMsg *msg = getDownlinkMsg(rx_buf + 1, num_bytes_rxd - 1);
     if (msg != nullptr) {
-      pc.printf("![RSSI=%d, bytes: %d]! %s\r\n", radio.getRSSI(),
-                num_bytes_rxd - 1, rx_buf + 1);
+      pc.printf("![RSSI=%d, bytes: %d]!", radio.getRSSI(), num_bytes_rxd - 1);
+      if (msg->Type() == DownlinkType_Ack) {
+        if (acks_remaining.count(msg->FrameID()) == 1) {
+          acks_remaining.erase(msg->FrameID());
+        }
+        pc.printf("\r\n");
+      } else if (msg->Type() == DownlinkType_StateUpdate) {
+        pc.printf("tstamp: %d, bytes: %d, state: %d, fc.pwr: %d, gps string: "
+                  "%s, bat.v: %f\r\n",
+                  msg->TimeStamp(), msg->Bytes(), msg->State(),
+                  msg->FCPowered(), msg->GPSString(), msg->BattVoltage());
+      }
+      if (msg->AckReqd()) {
+        sendAck(msg->FrameID());
+      }
     }
   }
 }
@@ -161,26 +188,48 @@ void loop() {
 bool sendUplinkMsg(const std::string &str, bool with_ack) {
   builder.Reset();
 
+  /* NEED TO ACTUALLY PARSE STR */
+  UplinkType type = UplinkType_FCOff;
+  if (str[0] == 'o') {
+    type = UplinkType_FCOn;
+  } else if (str[0] == 'b') {
+    type = UplinkType_BlackPowderPulse;
+  }
+
+  pc.printf("1");
   uint8_t bps[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   bps[4] = 1;
   auto blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
+  pc.printf("2");
 
   Offset<UplinkMsg> msg = CreateUplinkMsg(
       builder, 1, UplinkType_FCOff, blackpowder_offset, frame_id, with_ack);
+  pc.printf("3");
   builder.Finish(msg);
+  pc.printf("4");
 
   uint8_t bytes = (uint8_t)builder.GetSize();
+  pc.printf("5");
   builder.Reset();
+  pc.printf("6");
+  blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
   msg = CreateUplinkMsg(builder, bytes, UplinkType_FCOff, blackpowder_offset,
                         frame_id, with_ack);
+  pc.printf("7");
   builder.Finish(msg);
+  pc.printf("8");
 
   uint8_t *buf = builder.GetBufferPointer();
+  pc.printf("9");
   int32_t size = builder.GetSize();
+  pc.printf("a");
 
-  acks_remaining.push_back({size, buf, frame_id});
-
+  if (with_ack) {
+    acks_remaining.insert({frame_id, {size, buf, 0}});
+    pc.printf("11");
+  }
   radio.send(buf, size);
+  pc.printf("12");
 
   ++frame_id;
 }
@@ -228,4 +277,26 @@ const DownlinkMsg *getDownlinkMsg(uint8_t *data, int32_t data_len) {
     return output;
   }
   return nullptr;
+}
+
+void resend_msgs() {
+  for (auto &msg : acks_remaining) {
+    radio.send(std::get<1>(msg.second), std::get<0>(msg.second));
+    ++std::get<2>(msg.second);
+    if (std::get<2>(msg.second) >= MAX_NUM_RETRIES) {
+      acks_remaining.erase(msg.first);
+    }
+  }
+}
+
+void sendAck(uint8_t frame_id) {
+  builder.Reset();
+  Offset<UplinkMsg> ack =
+      CreateUplinkMsg(builder, 1, UplinkType_Ack, 0, frame_id, false);
+  builder.Finish(ack);
+  uint8_t bytes = builder.GetSize();
+  builder.Reset();
+  ack = CreateUplinkMsg(builder, bytes, UplinkType_Ack, 0, frame_id, false);
+  builder.Finish(ack);
+  radio.send(builder.GetBufferPointer(), builder.GetSize());
 }
