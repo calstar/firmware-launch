@@ -161,7 +161,7 @@ const UplinkMsg *getUplinkMsg(char c) {
     // message says it should be, and actually process a message of THAT size.
     Verifier verifier(buffer, len);
     if (VerifyUplinkMsgBuffer(verifier)) {
-        const UplinkMsg *msg = GetUplinkMsg(uplinkMsgBuffer);
+        const UplinkMsg *msg = GetUplinkMsg(buffer);
         // The message knows how big it should be
         uint8_t expectedBytes = msg->Bytes();
 
