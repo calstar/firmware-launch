@@ -33,7 +33,8 @@ us_timestamp_t last_msg_send_us;
 
 RFM69 radio(SPI1_MOSI, SPI1_MISO, SPI1_SCLK, SPI1_SSEL, RADIO_RST, true);
 
-static uint8_t uplinkMsgBuffer[BUF_SIZE];
+uint8_t fcUpdateMsgBuffer[BUF_SIZE];
+uint8_t uplinkMsgBuffer[BUF_SIZE];
 
 void start() {
     fcPower = 0;
@@ -68,7 +69,11 @@ void loop() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         buildCurrentMessage();
 
-        debug_uart.printf("Sending radio downlink with fcPowered=%d\r\n", (int)fcPower);
+        debug_uart.printf("Sending radio downlink with fcPowered=%d", (int)fcPower);
+        if (fcLatestData) {
+            debug_uart.printf(" and latest FC data");
+        }
+        debug_uart.printf("\r\n");
         // Send over radio
         uint8_t *buf = builder.GetBufferPointer();
         int size = builder.GetSize();
@@ -81,6 +86,7 @@ void loop() {
         // Read into message type
         const FCUpdateMsg *msg = getFCUpdateMsg(rs422.getc());
         if (msg) {
+            debug_uart.printf("Read FC update message.\r\n");
             fcLatestData = msg;
         }
     }
@@ -109,15 +115,17 @@ void loop() {
         const UplinkMsg *msg = getUplinkMsg(radio_rx_buf[i]);
         if (msg) {
             // Received an uplink over radio -- FCOn/FCOff is for us, BlackPowderOn/BlackPowderOff is for FC
+            debug_uart.printf("Received uplink message -->\r\n");
             if (msg->Type() == UplinkType_FCOn) {
                 fcPower = 1;
-                debug_uart.printf("Turned on FC power.\r\n");
+                debug_uart.printf("    Turned on FC power.\r\n");
             } else if (msg->Type() == UplinkType_FCOff) {
                 fcPower = 0;
-                debug_uart.printf("Turned off FC power.\r\n");
+                debug_uart.printf("    Turned off FC power.\r\n");
             } else {
                 // For other messages we just forward to FC.
                 // msg came from uplinkMsgBuffer, so we just use the buffer here
+                debug_uart.printf("    Forwarded to FC.\r\n");
                 rs422.write(uplinkMsgBuffer, msg->Bytes(), NULL);
             }
         }
@@ -188,7 +196,6 @@ const UplinkMsg *getUplinkMsg(char c) {
 }
 const FCUpdateMsg *getFCUpdateMsg(char c) {
     static uint8_t buffer[BUF_SIZE];
-    static uint8_t return_buffer[BUF_SIZE];
     static unsigned int len = 0;
 
     if (len == BUF_SIZE) {
@@ -206,8 +213,8 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
     // message says it should be, and actually process a message of THAT size.
     Verifier verifier(buffer, len);
     if (VerifyFCUpdateMsgBuffer(verifier)) {
-        memcpy(return_buffer, buffer, len);
-        const FCUpdateMsg *output = GetFCUpdateMsg(return_buffer);
+        memcpy(fcUpdateMsgBuffer, buffer, len);
+        const FCUpdateMsg *output = GetFCUpdateMsg(fcUpdateMsgBuffer);
         // The message knows how big it should be
         uint8_t expectedBytes = output->Bytes();
 
@@ -223,7 +230,7 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
             if (VerifyFCUpdateMsgBuffer(smallerVerifier)) {
                 actual_len = expectedBytes;
                 // If it is a message, then make the return buffer just hold it (clear the extra bytes we copied)
-                memset(return_buffer+actual_len, 0, len - actual_len);
+                memset(fcUpdateMsgBuffer+actual_len, 0, len - actual_len);
             } else {
                 // If it isn't valid, then this buffer just has some malformed messages... continue and let's get
                 // them out of the buffer by reading more
@@ -247,8 +254,9 @@ void buildCurrentMessage() {
     builder.Reset();
     Offset<FCUpdateMsg> fcUpdateMsg;
     if (fcLatestData) {
+        // TODO: Why, when forwarding FC update messages, does it crash here?
         fcUpdateMsg = CreateFCUpdateMsg(builder,
-            1, // Can't be 0 or it will be ignored
+            fcLatestData->Bytes(),
             fcLatestData->State(),
             fcLatestData->AccelX(), fcLatestData->AccelY(), fcLatestData->AccelZ(),
             fcLatestData->MagX(), fcLatestData->MagY(), fcLatestData->MagZ(),
