@@ -24,6 +24,7 @@ bool bpIgnited[NUM_BP];
 
 DigitalOut led_red(STATE_LED_RED);
 DigitalOut led_green(STATE_LED_GREEN);
+DigitalOut led_blue(STATE_LED_BLUE);
 
 Serial rs422(RS422_TX, RS422_RX);
 Serial debug_uart(DEBUG_TX, DEBUG_RX);
@@ -36,11 +37,6 @@ void loop() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         uint8_t* buf = builder.GetBufferPointer();
         int size = builder.GetSize();
-
-        // Write the size of the message
-        // void* size_ptr = (void*)(&size);
-        // rs422.write((uint8_t*)size_ptr, sizeof(size), NULL);
-        // then write the message
         rs422.write(buf, size, NULL);
 
         // also just toggle the red LED at this point
@@ -76,10 +72,10 @@ void loop() {
     if (debug_uart.readable()) {
         char c = debug_uart.getc();
 
-        if (c == 'r') {
-            led_red = (led_red == 0) ? 1 : 0;
-        } else if (c == 'g') {
-            led_green = (led_green == 0) ? 1 : 0;
+        if (c == 'g') {
+            led_green = 1 - led_green;
+        } else if (c == 'b') {
+            led_blue = 1 - led_blue;
         }
     }
 }

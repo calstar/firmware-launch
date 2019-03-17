@@ -4,11 +4,14 @@
 
 #include "mbed.h"
 #include "pins.h"
+#include "RFM69/RFM69.hpp"
 
 #define DEBUG_UART_BAUDRATE (115200)
 #define RS422_BAUDRATE (115200)
 #define MSG_SEND_INTERVAL_US (250000u) // 250*1000us = 250ms
 #define BUF_SIZE (256)
+// random 16 bytes that must be the same across all nodes
+#define ENCRYPT_KEY ("CALSTARENCRYPTKE")
 
 using namespace flatbuffers;
 using namespace Calstar;
@@ -19,8 +22,7 @@ void buildCurrentMessage();
 
 Timer msgTimer;
 FlatBufferBuilder builder(BUF_SIZE);
-// FCUpdateMsg fcLatestData;
-// bool fcPowered = false;
+const FCUpdateMsg *fcLatestData;
 
 DigitalOut fcPower(FC_SWITCH);
 
@@ -28,6 +30,11 @@ Serial rs422(RS422_TX, RS422_RX);
 Serial debug_uart(DEBUG_TX, DEBUG_RX);
 
 us_timestamp_t last_msg_send_us;
+
+RFM69 radio(SPI1_MOSI, SPI1_MISO, SPI1_SCLK, SPI1_SSEL, RADIO_RST, true);
+
+uint8_t fcUpdateMsgBuffer[BUF_SIZE];
+uint8_t uplinkMsgBuffer[BUF_SIZE];
 
 void start() {
     fcPower = 0;
@@ -42,6 +49,18 @@ void start() {
     debug_uart.printf("---- CalSTAR Telemetry/Power Control ----\r\n");
 
     last_msg_send_us = msgTimer.read_high_resolution_us();
+
+    
+    radio.reset();
+    debug_uart.printf("Radio reset complete.\r\n");
+
+    radio.init();
+    radio.setAESEncryption(ENCRYPT_KEY, strlen(ENCRYPT_KEY));
+
+    radio.setHighPowerSettings(true);
+    radio.setPowerDBm(20);
+
+    debug_uart.printf("Radio init complete.\r\n");
 }
 
 void loop() {
@@ -50,8 +69,15 @@ void loop() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         buildCurrentMessage();
 
-        debug_uart.printf("Sending downlink with fcPowered=%d\r\n", (int)fcPower);
-        // TODO: send over radio
+        debug_uart.printf("Sending radio downlink with fcPowered=%d", (int)fcPower);
+        if (fcLatestData) {
+            debug_uart.printf(" and latest FC data");
+        }
+        debug_uart.printf("\r\n");
+        // Send over radio
+        uint8_t *buf = builder.GetBufferPointer();
+        int size = builder.GetSize();
+        radio.send(buf, size);
 
         last_msg_send_us = current_time;
     }
@@ -60,7 +86,8 @@ void loop() {
         // Read into message type
         const FCUpdateMsg *msg = getFCUpdateMsg(rs422.getc());
         if (msg) {
-            // fcLatestData = msg;
+            debug_uart.printf("Read FC update message.\r\n");
+            fcLatestData = msg;
         }
     }
 
@@ -68,9 +95,39 @@ void loop() {
         char c = debug_uart.getc();
         if (c == 'p') {
             // toggle FC power
-            // fcPowered ^= true;
-            // fcPower = fcPowered ? 1 : 0;
             fcPower = 1 - fcPower;
+            if (fcPower) {
+                debug_uart.printf("Turned on FC power.\r\n");
+            } else {
+                debug_uart.printf("Turned off FC power.\r\n");
+            }
+        }
+    }
+
+    static char radio_rx_buf[256];
+    int num_bytes_received = radio.receive(radio_rx_buf, sizeof(radio_rx_buf));
+    // We skip the first byte; everything else is valid.
+    if (num_bytes_received > 1) {
+        debug_uart.printf("Received radio uplink of size %d [RSSI=%d].\r\n",
+            num_bytes_received - 1, radio.getRSSI());
+    }
+    for (int i = 1; i < num_bytes_received; i++) {
+        const UplinkMsg *msg = getUplinkMsg(radio_rx_buf[i]);
+        if (msg) {
+            // Received an uplink over radio -- FCOn/FCOff is for us, BlackPowderOn/BlackPowderOff is for FC
+            debug_uart.printf("Received uplink message -->\r\n");
+            if (msg->Type() == UplinkType_FCOn) {
+                fcPower = 1;
+                debug_uart.printf("    Turned on FC power.\r\n");
+            } else if (msg->Type() == UplinkType_FCOff) {
+                fcPower = 0;
+                debug_uart.printf("    Turned off FC power.\r\n");
+            } else {
+                // For other messages we just forward to FC.
+                // msg came from uplinkMsgBuffer, so we just use the buffer here
+                debug_uart.printf("    Forwarded to FC.\r\n");
+                rs422.write(uplinkMsgBuffer, msg->Bytes(), NULL);
+            }
         }
     }
 }
@@ -84,7 +141,6 @@ int main() {
 
 const UplinkMsg *getUplinkMsg(char c) {
     static uint8_t buffer[BUF_SIZE];
-    static uint8_t return_buffer[BUF_SIZE];
     static unsigned int len = 0;
 
     if (len == BUF_SIZE) {
@@ -102,8 +158,8 @@ const UplinkMsg *getUplinkMsg(char c) {
     // message says it should be, and actually process a message of THAT size.
     Verifier verifier(buffer, len);
     if (VerifyUplinkMsgBuffer(verifier)) {
-        memcpy(return_buffer, buffer, len);
-        const UplinkMsg *output = GetUplinkMsg(return_buffer);
+        memcpy(uplinkMsgBuffer, buffer, len);
+        const UplinkMsg *output = GetUplinkMsg(uplinkMsgBuffer);
         // The message knows how big it should be
         uint8_t expectedBytes = output->Bytes();
 
@@ -119,7 +175,7 @@ const UplinkMsg *getUplinkMsg(char c) {
             if (VerifyUplinkMsgBuffer(smallerVerifier)) {
                 actual_len = expectedBytes;
                 // If it is a message, then make the return buffer just hold it (clear the extra bytes we copied)
-                memset(return_buffer+actual_len, 0, len - actual_len);
+                memset(uplinkMsgBuffer+actual_len, 0, len - actual_len);
             } else {
                 // If it isn't valid, then this buffer just has some malformed messages... continue and let's get
                 // them out of the buffer by reading more
@@ -140,7 +196,6 @@ const UplinkMsg *getUplinkMsg(char c) {
 }
 const FCUpdateMsg *getFCUpdateMsg(char c) {
     static uint8_t buffer[BUF_SIZE];
-    static uint8_t return_buffer[BUF_SIZE];
     static unsigned int len = 0;
 
     if (len == BUF_SIZE) {
@@ -158,8 +213,8 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
     // message says it should be, and actually process a message of THAT size.
     Verifier verifier(buffer, len);
     if (VerifyFCUpdateMsgBuffer(verifier)) {
-        memcpy(return_buffer, buffer, len);
-        const FCUpdateMsg *output = GetFCUpdateMsg(return_buffer);
+        memcpy(fcUpdateMsgBuffer, buffer, len);
+        const FCUpdateMsg *output = GetFCUpdateMsg(fcUpdateMsgBuffer);
         // The message knows how big it should be
         uint8_t expectedBytes = output->Bytes();
 
@@ -175,7 +230,7 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
             if (VerifyFCUpdateMsgBuffer(smallerVerifier)) {
                 actual_len = expectedBytes;
                 // If it is a message, then make the return buffer just hold it (clear the extra bytes we copied)
-                memset(return_buffer+actual_len, 0, len - actual_len);
+                memset(fcUpdateMsgBuffer+actual_len, 0, len - actual_len);
             } else {
                 // If it isn't valid, then this buffer just has some malformed messages... continue and let's get
                 // them out of the buffer by reading more
@@ -197,50 +252,62 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
 
 void buildCurrentMessage() {
     builder.Reset();
-    Offset<FCUpdateMsg> fcUpdateMsg = CreateFCUpdateMsg(builder,
-        1, // Can't be 0 or it will be ignored
-        FCState_Pad,
-        0.0f, 1.0f, 2.0f,
-        3.0f, 4.0f, 5.0f,
-        6.0f, 7.0f, 8.0f,
-        9.0f, 10.0f,
-        false, false,
-        false, true,
-        false, false,
-        false, true,
-        false, false,
-        false, true,
-        false, false);
+    Offset<FCUpdateMsg> fcUpdateMsg;
+    if (fcLatestData) {
+        // TODO: Why, when forwarding FC update messages, does it crash here?
+        fcUpdateMsg = CreateFCUpdateMsg(builder,
+            fcLatestData->Bytes(),
+            fcLatestData->State(),
+            fcLatestData->AccelX(), fcLatestData->AccelY(), fcLatestData->AccelZ(),
+            fcLatestData->MagX(), fcLatestData->MagY(), fcLatestData->MagZ(),
+            fcLatestData->GyroX(), fcLatestData->GyroY(), fcLatestData->GyroZ(),
+            fcLatestData->Altitude(), fcLatestData->Pressure(),
+            fcLatestData->BP1Continuity(), fcLatestData->BP1Ignited(),
+            fcLatestData->BP2Continuity(), fcLatestData->BP2Ignited(),
+            fcLatestData->BP3Continuity(), fcLatestData->BP3Ignited(),
+            fcLatestData->BP4Continuity(), fcLatestData->BP4Ignited(),
+            fcLatestData->BP5Continuity(), fcLatestData->BP5Ignited(),
+            fcLatestData->BP6Continuity(), fcLatestData->BP6Ignited(),
+            fcLatestData->BP7Continuity(), fcLatestData->BP7Ignited());
+    } else {
+        // Null it if we don't have any FC data yet
+        fcUpdateMsg = 0;
+    }
     Offset<DownlinkMsg> message = CreateDownlinkMsg(builder,
         1, // Can't be 0 or it will be ignored
         TPCState_Pad,
         (int)fcPower,
-        fcUpdateMsg, // TODO: use the latest FC data
+        fcUpdateMsg,
         builder.CreateString("gps test"),
         123);
     builder.Finish(message);
 
     uint8_t bytes = (uint8_t)builder.GetSize();
     builder.Reset();
-    fcUpdateMsg = CreateFCUpdateMsg(builder,
-        1, // TODO: does the byte count here matter, since it's a sub-message?
-        FCState_Pad,
-        0.0f, 1.0f, 2.0f,
-        3.0f, 4.0f, 5.0f,
-        6.0f, 7.0f, 8.0f,
-        9.0f, 10.0f,
-        false, false,
-        false, true,
-        false, false,
-        false, true,
-        false, false,
-        false, true,
-        false, false);
+    if (fcLatestData) {
+        fcUpdateMsg = CreateFCUpdateMsg(builder,
+            fcLatestData->Bytes(),
+            fcLatestData->State(),
+            fcLatestData->AccelX(), fcLatestData->AccelY(), fcLatestData->AccelZ(),
+            fcLatestData->MagX(), fcLatestData->MagY(), fcLatestData->MagZ(),
+            fcLatestData->GyroX(), fcLatestData->GyroY(), fcLatestData->GyroZ(),
+            fcLatestData->Altitude(), fcLatestData->Pressure(),
+            fcLatestData->BP1Continuity(), fcLatestData->BP1Ignited(),
+            fcLatestData->BP2Continuity(), fcLatestData->BP2Ignited(),
+            fcLatestData->BP3Continuity(), fcLatestData->BP3Ignited(),
+            fcLatestData->BP4Continuity(), fcLatestData->BP4Ignited(),
+            fcLatestData->BP5Continuity(), fcLatestData->BP5Ignited(),
+            fcLatestData->BP6Continuity(), fcLatestData->BP6Ignited(),
+            fcLatestData->BP7Continuity(), fcLatestData->BP7Ignited());
+    } else {
+        // Null it if we don't have any FC data yet
+        fcUpdateMsg = 0;
+    }
     message = CreateDownlinkMsg(builder,
         bytes, // Fill in actual number of bytes
         TPCState_Pad,
         (int)fcPower,
-        fcUpdateMsg, // TODO: use the latest FC data
+        fcUpdateMsg,
         builder.CreateString("gps test"),
         123);
     builder.Finish(message);
