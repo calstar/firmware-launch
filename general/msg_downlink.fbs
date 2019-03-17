@@ -12,6 +12,9 @@ table DownlinkMsg {
     FCMsg : FCUpdateMsg;
     GPSString : string;
     BattVoltage : uint16;
+    FrameID : uint8;
+    AckReqd : bool;
+    TimeStamp : uint64;
 }
 
 root_type DownlinkMsg;

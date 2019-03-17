@@ -3,7 +3,6 @@
 #define DEBUG_TX (PC_6)
 #define DEBUG_RX (PC_7)
 
-#define RADIO_INT (PC_0)
 #define SPI1_MOSI (PA_7)
 #define SPI1_MISO (PA_6)
 #define SPI1_SCLK (PA_5)
