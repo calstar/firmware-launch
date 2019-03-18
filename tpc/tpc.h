@@ -13,6 +13,12 @@
 // random 16 bytes that must be the same across all nodes
 #define ENCRYPT_KEY ("CALSTARENCRYPTKE")
 
+// analog in is 0-1 from gnd to VCC (3.3V)
+// so multiply by 3.3V first, then multiply by inverse of resistive divider
+// (92.2kOhm / 502.2kOhm)
+// then we have a recalibration factor added at the end
+#define AIN_TO_VOLTAGE (3.3f * 502.2f / 92.2f * 1.10201042442293f)
+
 using namespace flatbuffers;
 using namespace Calstar;
 
@@ -25,6 +31,7 @@ FlatBufferBuilder builder(BUF_SIZE);
 const FCUpdateMsg *fcLatestData = NULL;
 
 DigitalOut fcPower(FC_SWITCH);
+AnalogIn battVoltage(BATT_VOLTAGE);
 
 Serial rs422(RS422_TX, RS422_RX);
 Serial debug_uart(DEBUG_TX, DEBUG_RX);
@@ -328,6 +335,7 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
 
 void buildCurrentMessage() {
     us_timestamp_t currentTime = msgTimer.read_high_resolution_us();
+    uint16_t battVoltage_uint = battVoltage.read_u16();
 
     builder.Reset();
     Offset<FCUpdateMsg> fcUpdateMsg;
@@ -356,7 +364,7 @@ void buildCurrentMessage() {
         (int)fcPower,
         fcUpdateMsg,
         builder.CreateString("gps test"),
-        123,
+        battVoltage_uint,
         0,
         false,
         currentTime,
@@ -390,7 +398,7 @@ void buildCurrentMessage() {
         (int)fcPower,
         fcUpdateMsg,
         builder.CreateString("gps test"),
-        123,
+        battVoltage_uint,
         0,
         false,
         currentTime,
