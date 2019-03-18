@@ -69,11 +69,53 @@ void loop() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         buildCurrentMessage();
 
-        // debug_uart.printf("Sending radio downlink with fcPowered=%d", (int)fcPower);
-        // if (fcLatestData) {
-        //     debug_uart.printf(" and latest FC data");
-        // }
-        // debug_uart.printf("\r\n");
+        debug_uart.printf("Sending radio downlink with fcPowered=%d [%d bytes].\r\n",
+            (int)fcPower,
+            (int)builder.GetSize());
+        
+        const DownlinkMsg *msg = GetDownlinkMsg(builder.GetBufferPointer());
+        if (msg->FCMsg() && msg->FCMsg()->Altitude() != 9.0f) {
+            debug_uart.printf("[Bytes=%d,State=%d,FCPowered=%d,FCMsg={",
+                (int)msg->Bytes(), (int)msg->State(), (int)msg->FCPowered());
+            if (msg->FCMsg()) {
+                debug_uart.printf("Bytes=%d,State=%d,Accel=<%f,%f,%f>,Mag=<%f,%f,%f>,Gyro=<%f,%f,%f>,Alt=%f,Pressure=%f,BP1=<%d,%d>,BP2=<%d,%d>,BP3=<%d,%d>,BP4=<%d,%d>,BP5=<%d,%d>,BP6=<%d,%d>,BP7=<%d,%d>",
+                    (int)msg->FCMsg()->Bytes(),
+                    (int)msg->FCMsg()->State(),
+                    msg->FCMsg()->AccelX(),
+                    msg->FCMsg()->AccelY(),
+                    msg->FCMsg()->AccelZ(),
+                    msg->FCMsg()->MagX(),
+                    msg->FCMsg()->MagY(),
+                    msg->FCMsg()->MagZ(),
+                    msg->FCMsg()->GyroX(),
+                    msg->FCMsg()->GyroY(),
+                    msg->FCMsg()->GyroZ(),
+                    msg->FCMsg()->Altitude(),
+                    msg->FCMsg()->Pressure(),
+                    (int)msg->FCMsg()->BP1Continuity(),
+                    (int)msg->FCMsg()->BP1Ignited(),
+                    (int)msg->FCMsg()->BP2Continuity(),
+                    (int)msg->FCMsg()->BP2Ignited(),
+                    (int)msg->FCMsg()->BP3Continuity(),
+                    (int)msg->FCMsg()->BP3Ignited(),
+                    (int)msg->FCMsg()->BP4Continuity(),
+                    (int)msg->FCMsg()->BP4Ignited(),
+                    (int)msg->FCMsg()->BP5Continuity(),
+                    (int)msg->FCMsg()->BP5Ignited(),
+                    (int)msg->FCMsg()->BP6Continuity(),
+                    (int)msg->FCMsg()->BP6Ignited(),
+                    (int)msg->FCMsg()->BP7Continuity(),
+                    (int)msg->FCMsg()->BP7Ignited());
+            }
+            debug_uart.printf("},GPS=\"%s\",Batt=%d,Frame=%d,AckReqd=%d,Time=%llu,Type=%d]\r\n",
+                msg->GPSString()->str().c_str(),
+                (int)msg->BattVoltage(),
+                (int)msg->FrameID(),
+                (int)msg->AckReqd(),
+                msg->TimeStamp(),
+                (int)msg->Type());
+        }
+
         // Send over radio
         uint8_t *buf = builder.GetBufferPointer();
         int size = builder.GetSize();
@@ -82,16 +124,38 @@ void loop() {
         last_msg_send_us = current_time;
     }
     // Always read messages
-    if (rs422.readable()) {
+    while (rs422.readable()) {
         // Read into message type
         const FCUpdateMsg *msg = getFCUpdateMsg(rs422.getc());
         if (msg) {
-            debug_uart.printf("Read FC update message.\r\n");
+            if (msg->Altitude() != 9.0f) {
+                debug_uart.printf("Read FC update message (B=%d,S=%d,A=<%f,%f,%f>,M=<%f,%f,%f>,G=<%f,%f,%f>,A=%f,P=%f,BP=<%d,%d,%d,%d,%d,%d,%d>).\r\n",
+                    (int)msg->Bytes(),
+                    (int)msg->State(),
+                    msg->AccelX(),
+                    msg->AccelY(),
+                    msg->AccelZ(),
+                    msg->MagX(),
+                    msg->MagY(),
+                    msg->MagZ(),
+                    msg->GyroX(),
+                    msg->GyroY(),
+                    msg->GyroZ(),
+                    msg->Altitude(),
+                    msg->Pressure(),
+                    msg->BP1Ignited(),
+                    msg->BP2Ignited(),
+                    msg->BP3Ignited(),
+                    msg->BP4Ignited(),
+                    msg->BP5Ignited(),
+                    msg->BP6Ignited(),
+                    msg->BP7Ignited());
+            }
             fcLatestData = msg;
         }
     }
 
-    if (debug_uart.readable()) {
+    while (debug_uart.readable()) {
         char c = debug_uart.getc();
         if (c == 'p') {
             // toggle FC power
@@ -128,7 +192,14 @@ void loop() {
             } else {
                 // For other messages we just forward to FC.
                 // msg came from uplinkMsgBuffer, so we just use the buffer here
-                debug_uart.printf("    Forwarded to FC.\r\n");
+                debug_uart.printf("    Forwarded BlackPowderPulse(");
+                for (uoffset_t i = 0; i < msg->BP()->size(); i++) {
+                    debug_uart.printf("%d", msg->BP()->Get(i));
+                    if (i != msg->BP()->size()-1) {
+                        debug_uart.printf(",");
+                    }
+                }
+                debug_uart.printf(")to FC.\r\n");
                 rs422.write(uplinkMsgBuffer, msg->Bytes(), NULL);
             }
         }
@@ -256,6 +327,8 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
 }
 
 void buildCurrentMessage() {
+    us_timestamp_t currentTime = msgTimer.read_high_resolution_us();
+
     builder.Reset();
     Offset<FCUpdateMsg> fcUpdateMsg;
     if (fcLatestData) {
@@ -286,7 +359,7 @@ void buildCurrentMessage() {
         123,
         0,
         false,
-        0,
+        currentTime,
         DownlinkType_StateUpdate);
     builder.Finish(message);
 
@@ -320,7 +393,9 @@ void buildCurrentMessage() {
         123,
         0,
         false,
-        0,
+        currentTime,
         DownlinkType_StateUpdate);
     builder.Finish(message);
+
+    fcLatestData = NULL;
 }

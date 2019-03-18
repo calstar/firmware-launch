@@ -19,7 +19,7 @@ void buildCurrentMessage();
 
 Timer msgTimer;
 FlatBufferBuilder builder(BUF_SIZE);
-bool bpIgnited[NUM_BP];
+bool bpIgnited[NUM_BP] = { true, true, false, true, true, true, false };
 
 
 DigitalOut led_red(STATE_LED_RED);
@@ -40,9 +40,7 @@ void loop() {
         rs422.write(buf, size, NULL);
 
         // also just toggle the red LED at this point
-        led_red = (led_red == 0) ? 1 : 0;
-
-        debug_uart.printf("Sending FC update\r\n");
+        led_red = led_red ? 0 : 1;
 
         last_msg_send_us = current_time;
     }
@@ -51,31 +49,43 @@ void loop() {
         // Read into message type
         const UplinkMsg *msg = getUplinkMsg(rs422.getc());
         if (msg) {
-            UplinkType type = msg->Type();
-
             // If turning on/off black powder, for now we just set our state
             // (in the future we will actually do black powder stuff)
-            if (type == UplinkType_BlackPowderOn || type == UplinkType_BlackPowderOff) {
-                const Vector<uint8_t> *bp = msg->BP();
-                for (int i = 0; i < NUM_BP; i++) {
-                    if (bp->Get(i)) {
-                        bpIgnited[i] = (type == UplinkType_BlackPowderOn);
-                    }
+            if (msg->Type() == UplinkType_BlackPowderPulse) {
+                for (uoffset_t i = 0; i < NUM_BP && i < msg->BP()->size(); i++) {
+                    bpIgnited[i] |= msg->BP()->Get(i);
                 }
 
                 // Update the message being sent out to T/PC
                 buildCurrentMessage();
+
+                debug_uart.printf("Received BlackPowderPulse -->\r\n");
+                debug_uart.printf("    Current ignited state: ");
+                for (int i = 0; i < NUM_BP; i++) {
+                    debug_uart.printf("%d", bpIgnited[i]);
+                    if (i != NUM_BP-1) {
+                        debug_uart.printf(",");
+                    }
+                }
+                debug_uart.printf("\r\n");
             }
+            led_green = !bpIgnited[0];
+            led_blue = !bpIgnited[1];
         }
     }
 
     if (debug_uart.readable()) {
         char c = debug_uart.getc();
 
-        if (c == 'g') {
-            led_green = 1 - led_green;
-        } else if (c == 'b') {
-            led_blue = 1 - led_blue;
+        if (c == 'p') {
+            debug_uart.printf("Current ignited state: ");
+            for (int i = 0; i < NUM_BP; i++) {
+                debug_uart.printf("%d", bpIgnited[i]);
+                if (i != NUM_BP-1) {
+                    debug_uart.printf(",");
+                }
+            }
+            debug_uart.printf("\r\n");
         }
     }
 }
@@ -83,6 +93,7 @@ void loop() {
 void start() {
     led_red = 0;
     led_green = 1;
+    led_blue = 1;
 
     msgTimer.start();
 
@@ -106,9 +117,9 @@ int main() {
 }
 
 
+uint8_t uplinkMsgBuffer[BUF_SIZE];
 const UplinkMsg *getUplinkMsg(char c) {
     static uint8_t buffer[BUF_SIZE];
-    static uint8_t return_buffer[BUF_SIZE];
     static unsigned int len = 0;
 
     if (len == BUF_SIZE) {
@@ -126,10 +137,9 @@ const UplinkMsg *getUplinkMsg(char c) {
     // message says it should be, and actually process a message of THAT size.
     Verifier verifier(buffer, len);
     if (VerifyUplinkMsgBuffer(verifier)) {
-        memcpy(return_buffer, buffer, len);
-        const UplinkMsg *output = GetUplinkMsg(return_buffer);
+        const UplinkMsg *msg = GetUplinkMsg(buffer);
         // The message knows how big it should be
-        uint8_t expectedBytes = output->Bytes();
+        uint8_t expectedBytes = msg->Bytes();
 
         uint8_t actual_len = len;
         if (len < expectedBytes) {
@@ -141,9 +151,8 @@ const UplinkMsg *getUplinkMsg(char c) {
             // is actually a message in its own right (just a double check basically)
             Verifier smallerVerifier(buffer, expectedBytes);
             if (VerifyUplinkMsgBuffer(smallerVerifier)) {
+                // If it is a message, then make sure we use the correct (smaller) length
                 actual_len = expectedBytes;
-                // If it is a message, then make the return buffer just hold it (clear the extra bytes we copied)
-                memset(return_buffer+actual_len, 0, len - actual_len);
             } else {
                 // If it isn't valid, then this buffer just has some malformed messages... continue and let's get
                 // them out of the buffer by reading more
@@ -151,14 +160,17 @@ const UplinkMsg *getUplinkMsg(char c) {
             }
         }
 
-        // Now that we've read a valid message, remove it from the buffer and move everything else down
+        // Now that we've read a valid message, copy it into the output buffer,
+        // then remove it from the input buffer and move everything else down.
         // Then reduce current buffer length by the length of the processed message
         // Then clear the rest of the buffer so that we don't get false positives with the verifiers
+        memcpy(uplinkMsgBuffer, buffer, actual_len);
         memmove(buffer, buffer+actual_len, BUF_SIZE-actual_len);
         len -= actual_len;
+        // Clear the rest of the buffer
         memset(buffer+len, 0, BUF_SIZE-len);
 
-        return output;
+        return GetUplinkMsg(uplinkMsgBuffer);
     }
     return NULL;
 }
@@ -172,13 +184,13 @@ void buildCurrentMessage() {
         3.0f, 4.0f, 5.0f,
         6.0f, 7.0f, 8.0f,
         9.0f, 10.0f,
-        bpIgnited[0], false,
-        bpIgnited[1], true,
-        bpIgnited[2], false,
-        bpIgnited[3], true,
-        bpIgnited[4], false,
-        bpIgnited[5], true,
-        bpIgnited[6], false);
+        false, bpIgnited[0],
+        true, bpIgnited[1],
+        false, bpIgnited[2],
+        true, bpIgnited[3],
+        false, bpIgnited[4],
+        true, bpIgnited[5],
+        false, bpIgnited[6]);
     builder.Finish(message);
 
     uint8_t bytes = (uint8_t)builder.GetSize();
@@ -190,12 +202,12 @@ void buildCurrentMessage() {
         3.0f, 4.0f, 5.0f,
         6.0f, 7.0f, 8.0f,
         9.0f, 10.0f,
-        bpIgnited[0], false,
-        bpIgnited[1], true,
-        bpIgnited[2], false,
-        bpIgnited[3], true,
-        bpIgnited[4], false,
-        bpIgnited[5], true,
-        bpIgnited[6], false);
+        false, bpIgnited[0],
+        true, bpIgnited[1],
+        false, bpIgnited[2],
+        true, bpIgnited[3],
+        false, bpIgnited[4],
+        true, bpIgnited[5],
+        false, bpIgnited[6]);
     builder.Finish(message);
 }
