@@ -29,8 +29,10 @@
 
 #include "RFM69/RFM69.hpp"
 #include "USBSerial.h"
+#include <inttypes.h>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 using namespace flatbuffers;
 using namespace Calstar;
@@ -47,7 +49,7 @@ using namespace Calstar;
 #define FLATBUF_BUF_SIZE (256)
 
 // resend messages for which have not received acks at 50ms intervals
-#define ACK_CHECK_INTERVAL_SEC (0.05f)
+#define ACK_CHECK_INTERVAL_MS (1000)
 #define MAX_NUM_RETRIES (50)
 
 /****************Global Variables***************/
@@ -69,14 +71,12 @@ bool retry = true;
 
 int32_t t_tx_led_on;
 int32_t t_rx_led_on;
+int32_t t_last_resend;
 
 uint8_t frame_id;
 
-// USB does not work with LowPowerTicker
-Ticker ack_checker;
-
 // frame_id, <buffer size, buffer, number of retries>
-std::unordered_map<uint8_t, std::tuple<int32_t, uint8_t *, uint8_t>>
+std::unordered_map<uint8_t, std::pair<std::vector<uint8_t>, uint8_t>>
     acks_remaining;
 
 FlatBufferBuilder builder(FLATBUF_BUF_SIZE);
@@ -85,6 +85,7 @@ FlatBufferBuilder builder(FLATBUF_BUF_SIZE);
 void start();
 void loop();
 bool sendUplinkMsg(const std::string &str, bool with_ack);
+const DownlinkMsg *getDownlinkMsgChar(char c);
 const DownlinkMsg *getDownlinkMsg(uint8_t *data, int32_t data_len);
 void resend_msgs();
 void sendAck(uint8_t frame_id);
@@ -116,10 +117,14 @@ void start() {
 
   frame_id = 0;
 
-  ack_checker.attach(&resend_msgs, ACK_CHECK_INTERVAL_SEC);
+  t_last_resend = t.read_ms();
 }
 
 void loop() {
+  if (t.read_ms() - t_last_resend > ACK_CHECK_INTERVAL_MS) {
+    resend_msgs();
+    t_last_resend = t.read_ms();
+  }
   if (tx_led.read() == 1 && t.read_ms() - t_tx_led_on > LED_ON_TIME_MS) {
     tx_led = 0;
   }
@@ -142,13 +147,16 @@ void loop() {
                     line.length());
           line += '\n';
           tx_led = 1;
+          pc.putc('a');
           sendUplinkMsg(line, true);
           t_tx_led_on = t.read_ms();
+          pc.printf("\r\nOut of send up link message true\r\n");
         } else {
           pc.printf("![SENDING ONCE ' %s ', bytes: %d]!\r\n", line.c_str(),
                     line.length());
           line += '\n';
           tx_led = 1;
+          pc.putc('b');
           sendUplinkMsg(line, false);
           t_tx_led_on = t.read_ms();
         }
@@ -164,128 +172,186 @@ void loop() {
     rx_buf[num_bytes_rxd] = '\0';
     rx_led = 1;
     t_rx_led_on = t.read_ms();
-    const DownlinkMsg *msg = getDownlinkMsg(rx_buf + 1, num_bytes_rxd - 1);
-    if (msg != nullptr) {
-      pc.printf("![RSSI=%d, bytes: %d]!", radio.getRSSI(), num_bytes_rxd - 1);
-      if (msg->Type() == DownlinkType_Ack) {
-        if (acks_remaining.count(msg->FrameID()) == 1) {
-          acks_remaining.erase(msg->FrameID());
+    for (int32_t i = 0; i < num_bytes_rxd - 1; ++i) {
+      const DownlinkMsg *msg = getDownlinkMsgChar(rx_buf[i + 1]);
+      if (msg != nullptr) {
+        pc.printf("![RSSI=%d, bytes: %d]!", radio.getRSSI(), num_bytes_rxd - 1);
+        if (msg->Type() == DownlinkType_Ack) {
+          if (acks_remaining.count(msg->FrameID()) == 1) {
+            acks_remaining.erase(msg->FrameID());
+          }
+          pc.printf("\r\n");
+        } else if (msg->Type() == DownlinkType_StateUpdate) {
+          pc.printf("tstamp: %" PRIu64 ", bytes: %d, state: %d, fc.pwr: %d, "
+                    "gps string: %s, bat.v: %u, ",
+                    msg->TimeStamp(), (int)msg->Bytes(), (int)msg->State(),
+                    (int)msg->FCPowered(), msg->GPSString()->str().c_str(),
+                    (uint32_t)msg->BattVoltage());
+          if (msg->FCMsg()) {
+            pc.printf("bps: %d %d, %d %d, %d %d, %d %d, %d %d, %d %d, %d %d\r\n",
+                      (int)msg->FCMsg()->BP1Continuity(),
+                      (int)msg->FCMsg()->BP1Ignited(),
+                      (int)msg->FCMsg()->BP2Continuity(),
+                      (int)msg->FCMsg()->BP2Ignited(),
+                      (int)msg->FCMsg()->BP3Continuity(),
+                      (int)msg->FCMsg()->BP3Ignited(),
+                      (int)msg->FCMsg()->BP4Continuity(),
+                      (int)msg->FCMsg()->BP4Ignited(),
+                      (int)msg->FCMsg()->BP5Continuity(),
+                      (int)msg->FCMsg()->BP5Ignited(),
+                      (int)msg->FCMsg()->BP6Continuity(),
+                      (int)msg->FCMsg()->BP6Ignited(),
+                      (int)msg->FCMsg()->BP7Continuity(),
+                      (int)msg->FCMsg()->BP7Ignited());
+          }
+          pc.printf("\r\n");
         }
-        pc.printf("\r\n");
-      } else if (msg->Type() == DownlinkType_StateUpdate) {
-        pc.printf("tstamp: %d, bytes: %d, state: %d, fc.pwr: %d, gps string: "
-                  "%s, bat.v: %f\r\n",
-                  msg->TimeStamp(), msg->Bytes(), msg->State(),
-                  msg->FCPowered(), msg->GPSString(), msg->BattVoltage());
-      }
-      if (msg->AckReqd()) {
-        sendAck(msg->FrameID());
+        if (msg->AckReqd()) {
+          sendAck(msg->FrameID());
+        }
+      } else {
+        // pc.printf("Failed read\r\n");
       }
     }
   }
 }
 
 bool sendUplinkMsg(const std::string &str, bool with_ack) {
+  pc.printf("0");
   builder.Reset();
 
+  uint8_t bps[7] = {0, 0, 0, 0, 0, 0, 0};
   /* NEED TO ACTUALLY PARSE STR */
   UplinkType type = UplinkType_FCOff;
-  if (str[0] == 'o') {
+  if (str[0] == 'n') {
     type = UplinkType_FCOn;
   } else if (str[0] == 'b') {
     type = UplinkType_BlackPowderPulse;
+    pc.printf("%s\r\n", str.c_str());
+    if (str.length() >= 8) {
+      for (int32_t i = 1; i < 8; ++i) {
+        if (str[i] == '1') {
+          bps[i - 1] = 1;
+        } else {
+          bps[i - 1] = 0;
+        }
+      }
+    }
+
+  } else if (str[0] == 'f') {
+    type = UplinkType_FCOff;
+  } else {
+    type = UplinkType_FCOff;
   }
 
-  pc.printf("1");
-  uint8_t bps[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  bps[4] = 1;
   auto blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
-  pc.printf("2");
 
-  Offset<UplinkMsg> msg = CreateUplinkMsg(
-      builder, 1, UplinkType_FCOff, blackpowder_offset, frame_id, with_ack);
-  pc.printf("3");
+  Offset<UplinkMsg> msg =
+      CreateUplinkMsg(builder, 1, type, blackpowder_offset, frame_id, with_ack);
   builder.Finish(msg);
-  pc.printf("4");
 
-  uint8_t bytes = (uint8_t)builder.GetSize();
-  pc.printf("5");
+  const uint8_t bytes = (uint8_t)builder.GetSize();
   builder.Reset();
-  pc.printf("6");
   blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
-  msg = CreateUplinkMsg(builder, bytes, UplinkType_FCOff, blackpowder_offset,
-                        frame_id, with_ack);
-  pc.printf("7");
+  msg = CreateUplinkMsg(builder, bytes, type, blackpowder_offset, frame_id,
+                        with_ack);
   builder.Finish(msg);
-  pc.printf("8");
 
-  uint8_t *buf = builder.GetBufferPointer();
-  pc.printf("9");
-  int32_t size = builder.GetSize();
-  pc.printf("a");
+  const uint8_t *buf = builder.GetBufferPointer();
+  const int32_t size = builder.GetSize();
 
   if (with_ack) {
-    acks_remaining.insert({frame_id, {size, buf, 0}});
-    pc.printf("11");
+    acks_remaining.insert(
+        {frame_id, {std::vector<uint8_t>(buf, buf + size), 0}});
+    pc.printf("1");
   }
   radio.send(buf, size);
-  pc.printf("12");
+  pc.printf("2");
 
   ++frame_id;
 }
+uint8_t ret_buf[FLATBUF_BUF_SIZE];
+const DownlinkMsg *getDownlinkMsgChar(char c) {
+  static uint8_t buffer[FLATBUF_BUF_SIZE];
+  static unsigned int len = 0;
 
-const DownlinkMsg *getDownlinkMsg(uint8_t *data, int32_t data_len) {
-  static uint8_t buf[FLATBUF_BUF_SIZE];
-  static uint8_t return_buf[FLATBUF_BUF_SIZE];
-  static uint32_t len = 0;
-
-  uint32_t bytes_left = FLATBUF_BUF_SIZE - len;
-
-  if (data_len > bytes_left) {
-    uint32_t num_move = data_len - bytes_left;
-    memmove(buf, buf + num_move, len - num_move);
-    memcpy(buf + len - num_move, data, data_len);
-    len = FLATBUF_BUF_SIZE;
+  if (len == FLATBUF_BUF_SIZE) {
+    // If at end of buffer, shift and add to end
+    memmove(buffer, buffer + 1, FLATBUF_BUF_SIZE - 1);
+    buffer[FLATBUF_BUF_SIZE - 1] = (uint8_t)c;
   } else {
-    memcpy(buf + len, data, data_len);
-    len += data_len;
+    // Otherwise build up buffer
+    buffer[len++] = (uint8_t)c;
   }
 
-  Verifier verifier(buf, len);
+  // The verifier will say that buf has a valid message for any length from
+  // actual_length-some number to full buffer length So basically, we trust the
+  // verifier, but verify separately by having a #-bytes field in the message
+  // itself So if the verifier says there's a valid message in the buffer, we
+  // read that message, get the number of bytes that the message says it should
+  // be, and actually process a message of THAT size.
+  Verifier verifier(buffer, len);
   if (VerifyDownlinkMsgBuffer(verifier)) {
-    memcpy(return_buf, buf, len);
-    const DownlinkMsg *output = GetDownlinkMsg(return_buf);
+    const DownlinkMsg *msg = GetDownlinkMsg(buffer);
+    // The message knows how big it should be
+    const uint8_t expectedBytes = msg->Bytes();
 
-    uint8_t expected_num_bytes = output->Bytes();
     uint8_t actual_len = len;
-    if (len < expected_num_bytes) {
-      return NULL;
-    } else if (len > expected_num_bytes) {
-      Verifier smaller_verifier(buf, expected_num_bytes);
-      if (VerifyDownlinkMsgBuffer(smaller_verifier)) {
-        actual_len = expected_num_bytes;
-        memset(return_buf + actual_len, 0, len - actual_len);
+    if (len < expectedBytes) {
+      // The verifier will say we have a valid message even if we're a few bytes
+      // short Just read more characters at this point by returning early
+      return nullptr;
+    } else if (len > expectedBytes) {
+      // Now we want to verify that the "smaller buffer" with length equal to
+      // the expected number of bytes is actually a message in its own right
+      // (just a double check basically)
+      Verifier smallerVerifier(buffer, expectedBytes);
+      if (VerifyDownlinkMsgBuffer(smallerVerifier)) {
+        // If it is a message, then make sure we use the correct (smaller)
+        // length
+        actual_len = expectedBytes;
       } else {
+        // If it isn't valid, then this buffer just has some malformed
+        // messages... continue and let's get them out of the buffer by reading
+        // more
         return nullptr;
       }
     }
 
-    memmove(buf, buf + actual_len, FLATBUF_BUF_SIZE - actual_len);
+    // Now that we've read a valid message, copy it into the output buffer,
+    // then remove it from the input buffer and move everything else down.
+    // Then reduce current buffer length by the length of the processed message
+    // Then clear the rest of the buffer so that we don't get false positives
+    // with the verifiers
+    memcpy(ret_buf, buffer, actual_len);
+    memmove(buffer, buffer + actual_len, FLATBUF_BUF_SIZE - actual_len);
     len -= actual_len;
-    memset(buf + len, 0, FLATBUF_BUF_SIZE - len);
+    // Clear the rest of the buffer
+    memset(buffer + len, 0, FLATBUF_BUF_SIZE - len);
 
-    return output;
+    return GetDownlinkMsg(ret_buf);
   }
   return nullptr;
 }
 
 void resend_msgs() {
+  bool resent = false;
   for (auto &msg : acks_remaining) {
-    radio.send(std::get<1>(msg.second), std::get<0>(msg.second));
-    ++std::get<2>(msg.second);
-    if (std::get<2>(msg.second) >= MAX_NUM_RETRIES) {
+    resent = true;
+    tx_led = 1;
+    pc.putc('c');
+    pc.printf("![RESENDING FRAME '%d']!\r\n", (int)msg.first);
+    const std::vector<uint8_t> &vec = std::get<0>(msg.second);
+    radio.send(vec.data(), vec.size());
+    // pc.printf("Complete\r\n");
+    std::get<1>(msg.second) = std::get<1>(msg.second) + 1;
+    if (std::get<1>(msg.second) >= MAX_NUM_RETRIES) {
       acks_remaining.erase(msg.first);
+      pc.printf("Rmd an entry\r\n");
     }
+  }
+  if (resent) {
+    t_tx_led_on = t.read_ms();
   }
 }
 
@@ -294,7 +360,7 @@ void sendAck(uint8_t frame_id) {
   Offset<UplinkMsg> ack =
       CreateUplinkMsg(builder, 1, UplinkType_Ack, 0, frame_id, false);
   builder.Finish(ack);
-  uint8_t bytes = builder.GetSize();
+  const uint8_t bytes = builder.GetSize();
   builder.Reset();
   ack = CreateUplinkMsg(builder, bytes, UplinkType_Ack, 0, frame_id, false);
   builder.Finish(ack);
