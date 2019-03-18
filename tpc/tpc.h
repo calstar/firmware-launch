@@ -22,7 +22,7 @@ void buildCurrentMessage();
 
 Timer msgTimer;
 FlatBufferBuilder builder(BUF_SIZE);
-const FCUpdateMsg *fcLatestData;
+const FCUpdateMsg *fcLatestData = NULL;
 
 DigitalOut fcPower(FC_SWITCH);
 
@@ -69,11 +69,11 @@ void loop() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         buildCurrentMessage();
 
-        debug_uart.printf("Sending radio downlink with fcPowered=%d", (int)fcPower);
-        if (fcLatestData) {
-            debug_uart.printf(" and latest FC data");
-        }
-        debug_uart.printf("\r\n");
+        // debug_uart.printf("Sending radio downlink with fcPowered=%d", (int)fcPower);
+        // if (fcLatestData) {
+        //     debug_uart.printf(" and latest FC data");
+        // }
+        // debug_uart.printf("\r\n");
         // Send over radio
         uint8_t *buf = builder.GetBufferPointer();
         int size = builder.GetSize();
@@ -108,20 +108,23 @@ void loop() {
     int num_bytes_received = radio.receive(radio_rx_buf, sizeof(radio_rx_buf));
     // We skip the first byte; everything else is valid.
     if (num_bytes_received > 1) {
-        debug_uart.printf("Received radio uplink of size %d [RSSI=%d].\r\n",
+        debug_uart.printf("Received %d bytes from radio [RSSI=%d].\r\n",
             num_bytes_received - 1, radio.getRSSI());
     }
     for (int i = 1; i < num_bytes_received; i++) {
         const UplinkMsg *msg = getUplinkMsg(radio_rx_buf[i]);
         if (msg) {
-            // Received an uplink over radio -- FCOn/FCOff is for us, BlackPowderOn/BlackPowderOff is for FC
-            debug_uart.printf("Received uplink message -->\r\n");
+            // Received an uplink over radio -- FCOn/FCOff/Ack is for us, BlackPowderPulse is for FC
+            debug_uart.printf("--> Received uplink message -->\r\n");
             if (msg->Type() == UplinkType_FCOn) {
                 fcPower = 1;
                 debug_uart.printf("    Turned on FC power.\r\n");
             } else if (msg->Type() == UplinkType_FCOff) {
                 fcPower = 0;
                 debug_uart.printf("    Turned off FC power.\r\n");
+            } else if (msg->Type() == UplinkType_Ack) {
+                // TODO: deal with acks
+                debug_uart.printf("    Acking message receive (TODO).\r\n");
             } else {
                 // For other messages we just forward to FC.
                 // msg came from uplinkMsgBuffer, so we just use the buffer here
@@ -158,10 +161,9 @@ const UplinkMsg *getUplinkMsg(char c) {
     // message says it should be, and actually process a message of THAT size.
     Verifier verifier(buffer, len);
     if (VerifyUplinkMsgBuffer(verifier)) {
-        memcpy(uplinkMsgBuffer, buffer, len);
-        const UplinkMsg *output = GetUplinkMsg(uplinkMsgBuffer);
+        const UplinkMsg *msg = GetUplinkMsg(buffer);
         // The message knows how big it should be
-        uint8_t expectedBytes = output->Bytes();
+        uint8_t expectedBytes = msg->Bytes();
 
         uint8_t actual_len = len;
         if (len < expectedBytes) {
@@ -173,9 +175,8 @@ const UplinkMsg *getUplinkMsg(char c) {
             // is actually a message in its own right (just a double check basically)
             Verifier smallerVerifier(buffer, expectedBytes);
             if (VerifyUplinkMsgBuffer(smallerVerifier)) {
+                // If it is a message, then make sure we use the correct (smaller) length
                 actual_len = expectedBytes;
-                // If it is a message, then make the return buffer just hold it (clear the extra bytes we copied)
-                memset(uplinkMsgBuffer+actual_len, 0, len - actual_len);
             } else {
                 // If it isn't valid, then this buffer just has some malformed messages... continue and let's get
                 // them out of the buffer by reading more
@@ -183,14 +184,17 @@ const UplinkMsg *getUplinkMsg(char c) {
             }
         }
 
-        // Now that we've read a valid message, remove it from the buffer and move everything else down
+        // Now that we've read a valid message, copy it into the output buffer,
+        // then remove it from the input buffer and move everything else down.
         // Then reduce current buffer length by the length of the processed message
         // Then clear the rest of the buffer so that we don't get false positives with the verifiers
+        memcpy(uplinkMsgBuffer, buffer, actual_len);
         memmove(buffer, buffer+actual_len, BUF_SIZE-actual_len);
         len -= actual_len;
+        // Clear the rest of the buffer
         memset(buffer+len, 0, BUF_SIZE-len);
 
-        return output;
+        return GetUplinkMsg(uplinkMsgBuffer);
     }
     return NULL;
 }
@@ -213,10 +217,9 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
     // message says it should be, and actually process a message of THAT size.
     Verifier verifier(buffer, len);
     if (VerifyFCUpdateMsgBuffer(verifier)) {
-        memcpy(fcUpdateMsgBuffer, buffer, len);
-        const FCUpdateMsg *output = GetFCUpdateMsg(fcUpdateMsgBuffer);
+        const FCUpdateMsg *msg = GetFCUpdateMsg(buffer);
         // The message knows how big it should be
-        uint8_t expectedBytes = output->Bytes();
+        uint8_t expectedBytes = msg->Bytes();
 
         uint8_t actual_len = len;
         if (len < expectedBytes) {
@@ -228,9 +231,8 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
             // is actually a message in its own right (just a double check basically)
             Verifier smallerVerifier(buffer, expectedBytes);
             if (VerifyFCUpdateMsgBuffer(smallerVerifier)) {
+                // If it is a message, then make sure we use the correct (smaller) length
                 actual_len = expectedBytes;
-                // If it is a message, then make the return buffer just hold it (clear the extra bytes we copied)
-                memset(fcUpdateMsgBuffer+actual_len, 0, len - actual_len);
             } else {
                 // If it isn't valid, then this buffer just has some malformed messages... continue and let's get
                 // them out of the buffer by reading more
@@ -238,14 +240,17 @@ const FCUpdateMsg *getFCUpdateMsg(char c) {
             }
         }
 
-        // Now that we've read a valid message, remove it from the buffer and move everything else down
+        // Now that we've read a valid message, copy it into the output buffer,
+        // then remove it from the input buffer and move everything else down.
         // Then reduce current buffer length by the length of the processed message
         // Then clear the rest of the buffer so that we don't get false positives with the verifiers
+        memcpy(fcUpdateMsgBuffer, buffer, actual_len);
         memmove(buffer, buffer+actual_len, BUF_SIZE-actual_len);
         len -= actual_len;
+        // Clear the rest of the buffer
         memset(buffer+len, 0, BUF_SIZE-len);
 
-        return output;
+        return GetFCUpdateMsg(fcUpdateMsgBuffer);
     }
     return NULL;
 }
@@ -254,7 +259,6 @@ void buildCurrentMessage() {
     builder.Reset();
     Offset<FCUpdateMsg> fcUpdateMsg;
     if (fcLatestData) {
-        // TODO: Why, when forwarding FC update messages, does it crash here?
         fcUpdateMsg = CreateFCUpdateMsg(builder,
             fcLatestData->Bytes(),
             fcLatestData->State(),
@@ -279,7 +283,11 @@ void buildCurrentMessage() {
         (int)fcPower,
         fcUpdateMsg,
         builder.CreateString("gps test"),
-        123);
+        123,
+        0,
+        false,
+        0,
+        DownlinkType_StateUpdate);
     builder.Finish(message);
 
     uint8_t bytes = (uint8_t)builder.GetSize();
@@ -309,6 +317,10 @@ void buildCurrentMessage() {
         (int)fcPower,
         fcUpdateMsg,
         builder.CreateString("gps test"),
-        123);
+        123,
+        0,
+        false,
+        0,
+        DownlinkType_StateUpdate);
     builder.Finish(message);
 }
