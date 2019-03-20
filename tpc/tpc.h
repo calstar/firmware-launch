@@ -33,8 +33,8 @@ const FCUpdateMsg *fcLatestData = NULL;
 DigitalOut fcPower(FC_SWITCH);
 AnalogIn battVoltage(BATT_VOLTAGE);
 
-Serial rs422(RS422_TX, RS422_RX);
-Serial debug_uart(DEBUG_TX, DEBUG_RX);
+UARTSerial rs422(RS422_TX, RS422_RX, RS422_BAUDRATE);
+Serial debug_uart(DEBUG_TX, DEBUG_RX, DEBUG_UART_BAUDRATE);
 
 us_timestamp_t last_msg_send_us;
 
@@ -43,15 +43,15 @@ RFM69 radio(SPI1_MOSI, SPI1_MISO, SPI1_SCLK, SPI1_SSEL, RADIO_RST, true);
 uint8_t fcUpdateMsgBuffer[BUF_SIZE];
 uint8_t uplinkMsgBuffer[BUF_SIZE];
 
+uint8_t rs422_read_buf[BUF_SIZE];
+
 void start() {
     fcPower = 0;
 
     msgTimer.start();
 
-    rs422.baud(RS422_BAUDRATE);
-    rs422.set_blocking(false);
+    // rs422.set_blocking(true);
 
-    debug_uart.baud(DEBUG_UART_BAUDRATE);
     debug_uart.set_blocking(false);
     debug_uart.printf("---- CalSTAR Telemetry/Power Control ----\r\n");
 
@@ -79,49 +79,6 @@ void loop() {
         debug_uart.printf("Sending radio downlink with fcPowered=%d [%d bytes].\r\n",
             (int)fcPower,
             (int)builder.GetSize());
-        
-        const DownlinkMsg *msg = GetDownlinkMsg(builder.GetBufferPointer());
-        if (msg->FCMsg() && msg->FCMsg()->Altitude() != 9.0f) {
-            debug_uart.printf("[Bytes=%d,State=%d,FCPowered=%d,FCMsg={",
-                (int)msg->Bytes(), (int)msg->State(), (int)msg->FCPowered());
-            if (msg->FCMsg()) {
-                debug_uart.printf("Bytes=%d,State=%d,Accel=<%f,%f,%f>,Mag=<%f,%f,%f>,Gyro=<%f,%f,%f>,Alt=%f,Pressure=%f,BP1=<%d,%d>,BP2=<%d,%d>,BP3=<%d,%d>,BP4=<%d,%d>,BP5=<%d,%d>,BP6=<%d,%d>,BP7=<%d,%d>",
-                    (int)msg->FCMsg()->Bytes(),
-                    (int)msg->FCMsg()->State(),
-                    msg->FCMsg()->AccelX(),
-                    msg->FCMsg()->AccelY(),
-                    msg->FCMsg()->AccelZ(),
-                    msg->FCMsg()->MagX(),
-                    msg->FCMsg()->MagY(),
-                    msg->FCMsg()->MagZ(),
-                    msg->FCMsg()->GyroX(),
-                    msg->FCMsg()->GyroY(),
-                    msg->FCMsg()->GyroZ(),
-                    msg->FCMsg()->Altitude(),
-                    msg->FCMsg()->Pressure(),
-                    (int)msg->FCMsg()->BP1Continuity(),
-                    (int)msg->FCMsg()->BP1Ignited(),
-                    (int)msg->FCMsg()->BP2Continuity(),
-                    (int)msg->FCMsg()->BP2Ignited(),
-                    (int)msg->FCMsg()->BP3Continuity(),
-                    (int)msg->FCMsg()->BP3Ignited(),
-                    (int)msg->FCMsg()->BP4Continuity(),
-                    (int)msg->FCMsg()->BP4Ignited(),
-                    (int)msg->FCMsg()->BP5Continuity(),
-                    (int)msg->FCMsg()->BP5Ignited(),
-                    (int)msg->FCMsg()->BP6Continuity(),
-                    (int)msg->FCMsg()->BP6Ignited(),
-                    (int)msg->FCMsg()->BP7Continuity(),
-                    (int)msg->FCMsg()->BP7Ignited());
-            }
-            debug_uart.printf("},GPS=\"%s\",Batt=%d,Frame=%d,AckReqd=%d,Time=%llu,Type=%d]\r\n",
-                msg->GPSString()->str().c_str(),
-                (int)msg->BattVoltage(),
-                (int)msg->FrameID(),
-                (int)msg->AckReqd(),
-                msg->TimeStamp(),
-                (int)msg->Type());
-        }
 
         // Send over radio
         uint8_t *buf = builder.GetBufferPointer();
@@ -132,33 +89,12 @@ void loop() {
     }
     // Always read messages
     while (rs422.readable()) {
-        // Read into message type
-        const FCUpdateMsg *msg = getFCUpdateMsg(rs422.getc());
-        if (msg) {
-            if (msg->Altitude() != 9.0f) {
-                debug_uart.printf("Read FC update message (B=%d,S=%d,A=<%f,%f,%f>,M=<%f,%f,%f>,G=<%f,%f,%f>,A=%f,P=%f,BP=<%d,%d,%d,%d,%d,%d,%d>).\r\n",
-                    (int)msg->Bytes(),
-                    (int)msg->State(),
-                    msg->AccelX(),
-                    msg->AccelY(),
-                    msg->AccelZ(),
-                    msg->MagX(),
-                    msg->MagY(),
-                    msg->MagZ(),
-                    msg->GyroX(),
-                    msg->GyroY(),
-                    msg->GyroZ(),
-                    msg->Altitude(),
-                    msg->Pressure(),
-                    msg->BP1Ignited(),
-                    msg->BP2Ignited(),
-                    msg->BP3Ignited(),
-                    msg->BP4Ignited(),
-                    msg->BP5Ignited(),
-                    msg->BP6Ignited(),
-                    msg->BP7Ignited());
+        ssize_t num_read = rs422.read(rs422_read_buf, BUF_SIZE);
+        for (int i = 0; i < num_read; i++) {
+            const FCUpdateMsg *msg = getFCUpdateMsg(rs422_read_buf[i]);
+            if (msg) {
+                fcLatestData = msg;
             }
-            fcLatestData = msg;
         }
     }
 
@@ -207,7 +143,7 @@ void loop() {
                     }
                 }
                 debug_uart.printf(")to FC.\r\n");
-                rs422.write(uplinkMsgBuffer, msg->Bytes(), NULL);
+                rs422.write(uplinkMsgBuffer, msg->Bytes());
             }
         }
     }

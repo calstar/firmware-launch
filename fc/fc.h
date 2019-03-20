@@ -19,17 +19,19 @@ void buildCurrentMessage();
 
 Timer msgTimer;
 FlatBufferBuilder builder(BUF_SIZE);
-bool bpIgnited[NUM_BP] = { true, true, false, true, true, true, false };
+bool bpIgnited[NUM_BP] = { false, false, true, false, false, false, true };
 
 
 DigitalOut led_red(STATE_LED_RED);
 DigitalOut led_green(STATE_LED_GREEN);
 DigitalOut led_blue(STATE_LED_BLUE);
 
-Serial rs422(RS422_TX, RS422_RX);
-Serial debug_uart(DEBUG_TX, DEBUG_RX);
+UARTSerial rs422(RS422_TX, RS422_RX, RS422_BAUDRATE);
+Serial debug_uart(DEBUG_TX, DEBUG_RX, DEBUG_UART_BAUDRATE);
 
 us_timestamp_t last_msg_send_us;
+
+uint8_t rs422_read_buf[BUF_SIZE];
 
 void loop() {
     // Send a message every MSG_SEND_INTERVAL_US microseconds
@@ -37,7 +39,7 @@ void loop() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         uint8_t* buf = builder.GetBufferPointer();
         int size = builder.GetSize();
-        rs422.write(buf, size, NULL);
+        rs422.write(buf, size);
 
         // also just toggle the red LED at this point
         led_red = led_red ? 0 : 1;
@@ -45,32 +47,34 @@ void loop() {
         last_msg_send_us = current_time;
     }
     // Always read messages
-    if (rs422.readable()) {
-        // Read into message type
-        const UplinkMsg *msg = getUplinkMsg(rs422.getc());
-        if (msg) {
-            // If turning on/off black powder, for now we just set our state
-            // (in the future we will actually do black powder stuff)
-            if (msg->Type() == UplinkType_BlackPowderPulse) {
-                for (uoffset_t i = 0; i < NUM_BP && i < msg->BP()->size(); i++) {
-                    bpIgnited[i] |= msg->BP()->Get(i);
-                }
-
-                // Update the message being sent out to T/PC
-                buildCurrentMessage();
-
-                debug_uart.printf("Received BlackPowderPulse -->\r\n");
-                debug_uart.printf("    Current ignited state: ");
-                for (int i = 0; i < NUM_BP; i++) {
-                    debug_uart.printf("%d", bpIgnited[i]);
-                    if (i != NUM_BP-1) {
-                        debug_uart.printf(",");
+    while (rs422.readable()) {
+        ssize_t num_read = rs422.read(rs422_read_buf, BUF_SIZE);
+        for (int i = 0; i < num_read; i++) {
+            const UplinkMsg *msg = getUplinkMsg(rs422_read_buf[i]);
+            if (msg) {
+                // If turning on/off black powder, for now we just set our state
+                // (in the future we will actually do black powder stuff)
+                if (msg->Type() == UplinkType_BlackPowderPulse) {
+                    for (uoffset_t bp = 0; bp < NUM_BP && bp < msg->BP()->size(); bp++) {
+                        bpIgnited[bp] |= msg->BP()->Get(bp);
                     }
+
+                    // Update the message being sent out to T/PC
+                    buildCurrentMessage();
+
+                    debug_uart.printf("Received BlackPowderPulse -->\r\n");
+                    debug_uart.printf("    Current ignited state: ");
+                    for (int bp = 0; bp < NUM_BP; bp++) {
+                        debug_uart.printf("%d", bpIgnited[bp]);
+                        if (bp != NUM_BP-1) {
+                            debug_uart.printf(",");
+                        }
+                    }
+                    debug_uart.printf("\r\n");
                 }
-                debug_uart.printf("\r\n");
+                led_green = !bpIgnited[0];
+                led_blue = !bpIgnited[1];
             }
-            led_green = !bpIgnited[0];
-            led_blue = !bpIgnited[1];
         }
     }
 
@@ -92,15 +96,13 @@ void loop() {
 
 void start() {
     led_red = 0;
-    led_green = 1;
-    led_blue = 1;
+    led_green = !bpIgnited[0];
+    led_blue = !bpIgnited[1];
 
     msgTimer.start();
 
-    rs422.baud(RS422_BAUDRATE);
-    rs422.set_blocking(false);
+    // rs422.set_blocking(true);
 
-    debug_uart.baud(DEBUG_UART_BAUDRATE);
     debug_uart.set_blocking(false);
     debug_uart.printf("---- CalSTAR Flight Computer ----\r\n");
 
