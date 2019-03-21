@@ -89,7 +89,12 @@ void loop() {
         // Send over radio
         uint8_t *buf = builder.GetBufferPointer();
         int size = builder.GetSize();
-        radio.send(buf, size);
+        int bytesSent = 0;
+        while (bytesSent != size) {
+            buf += bytesSent;
+            size -= bytesSent;
+            bytesSent = radio.send(buf, size);
+        }
 
         last_msg_send_us = current_time;
     }
@@ -125,7 +130,11 @@ void loop() {
 
         size_t crlf_pos = gps_sentence_builder.find("\r\n");
         if (crlf_pos != std::string::npos) {
-            gpsLatestData = gps_sentence_builder.substr(0, crlf_pos);
+            std::string newSentence = gps_sentence_builder.substr(0, crlf_pos);
+            if (newSentence.substr(0, 6) == "$GPGGA" || newSentence.substr(0, 6) == "$GPRMC") {
+                gpsLatestData = newSentence;
+                debug_uart.printf("GPS: \"%s\"\r\n", newSentence.c_str());
+            }
             gps_sentence_builder = gps_sentence_builder.substr(crlf_pos + 2); // skip "\r\n"
         }
     }
@@ -361,4 +370,5 @@ void buildCurrentMessage() {
     builder.Finish(message);
 
     fcLatestData = NULL;
+    gpsLatestData = "";
 }
