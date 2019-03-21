@@ -5,9 +5,11 @@
 #include "mbed.h"
 #include "pins.h"
 #include "RFM69/RFM69.hpp"
+#include <string>
 
 #define DEBUG_UART_BAUDRATE (115200)
 #define RS422_BAUDRATE (115200)
+#define GPS_BAUDRATE (9600) // Must be 9600
 #define MSG_SEND_INTERVAL_US (250000u) // 250*1000us = 250ms
 #define BUF_SIZE (256)
 // random 16 bytes that must be the same across all nodes
@@ -34,6 +36,7 @@ DigitalOut fcPower(FC_SWITCH);
 AnalogIn battVoltage(BATT_VOLTAGE);
 
 UARTSerial rs422(RS422_TX, RS422_RX, RS422_BAUDRATE);
+UARTSerial gps_uart(GPS_TX, GPS_RX, GPS_BAUDRATE);
 Serial debug_uart(DEBUG_TX, DEBUG_RX, DEBUG_UART_BAUDRATE);
 
 us_timestamp_t last_msg_send_us;
@@ -44,6 +47,9 @@ uint8_t fcUpdateMsgBuffer[BUF_SIZE];
 uint8_t uplinkMsgBuffer[BUF_SIZE];
 
 uint8_t rs422_read_buf[BUF_SIZE];
+uint8_t gps_read_buf[BUF_SIZE];
+std::string gps_sentence_builder;
+std::string gpsLatestData;
 
 void start() {
     fcPower = 0;
@@ -108,6 +114,19 @@ void loop() {
             } else {
                 debug_uart.printf("Turned off FC power.\r\n");
             }
+        }
+    }
+
+    while (gps_uart.readable()) {
+        ssize_t num_read = gps_uart.read(gps_read_buf, BUF_SIZE);
+        for (int i = 0; i < num_read; i++) {
+            gps_sentence_builder += (char)gps_read_buf[i];
+        }
+
+        size_t crlf_pos = gps_sentence_builder.find("\r\n");
+        if (crlf_pos != std::string::npos) {
+            gpsLatestData = gps_sentence_builder.substr(0, crlf_pos);
+            gps_sentence_builder = gps_sentence_builder.substr(crlf_pos + 2); // skip "\r\n"
         }
     }
 
@@ -299,7 +318,7 @@ void buildCurrentMessage() {
         TPCState_Pad,
         (int)fcPower,
         fcUpdateMsg,
-        builder.CreateString("gps test"),
+        builder.CreateString(gpsLatestData),
         battVoltage_uint,
         0,
         false,
@@ -333,7 +352,7 @@ void buildCurrentMessage() {
         TPCState_Pad,
         (int)fcPower,
         fcUpdateMsg,
-        builder.CreateString("gps test"),
+        builder.CreateString(gpsLatestData),
         battVoltage_uint,
         0,
         false,
