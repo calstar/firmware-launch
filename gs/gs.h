@@ -52,6 +52,7 @@ using namespace Calstar;
 #define ACK_CHECK_INTERVAL_MS (1000)
 #define MAX_NUM_RETRIES (50)
 
+#define BATUINT_TO_FLOAT(a) (((float)(a))/3308.4751259079328064817304607171f)
 /****************Global Variables***************/
 DigitalOut rx_led(LED_RX);
 DigitalOut tx_led(LED_TX);
@@ -172,9 +173,11 @@ void loop() {
     rx_buf[num_bytes_rxd] = '\0';
     rx_led = 1;
     t_rx_led_on = t.read_ms();
+    bool failed = true;
     for (int32_t i = 0; i < num_bytes_rxd - 1; ++i) {
       const DownlinkMsg *msg = getDownlinkMsgChar(rx_buf[i + 1]);
       if (msg != nullptr) {
+        failed = false;
         pc.printf("![RSSI=%d, bytes: %d]!", radio.getRSSI(), num_bytes_rxd - 1);
         if (msg->Type() == DownlinkType_Ack) {
           if (acks_remaining.count(msg->FrameID()) == 1) {
@@ -183,26 +186,32 @@ void loop() {
           pc.printf("\r\n");
         } else if (msg->Type() == DownlinkType_StateUpdate) {
           pc.printf("tstamp: %" PRIu64 ", bytes: %d, state: %d, fc.pwr: %d, "
-                    "gps string: %s, bat.v: %u, ",
+                    "gps string: \"%s\", bat.v: %f",
                     msg->TimeStamp(), (int)msg->Bytes(), (int)msg->State(),
                     (int)msg->FCPowered(), msg->GPSString()->str().c_str(),
-                    (uint32_t)msg->BattVoltage());
+                    BATUINT_TO_FLOAT(msg->BattVoltage()));
           if (msg->FCMsg()) {
-            pc.printf("bps: %d %d, %d %d, %d %d, %d %d, %d %d, %d %d, %d %d\r\n",
-                      (int)msg->FCMsg()->BP1Continuity(),
-                      (int)msg->FCMsg()->BP1Ignited(),
-                      (int)msg->FCMsg()->BP2Continuity(),
-                      (int)msg->FCMsg()->BP2Ignited(),
-                      (int)msg->FCMsg()->BP3Continuity(),
-                      (int)msg->FCMsg()->BP3Ignited(),
-                      (int)msg->FCMsg()->BP4Continuity(),
-                      (int)msg->FCMsg()->BP4Ignited(),
-                      (int)msg->FCMsg()->BP5Continuity(),
-                      (int)msg->FCMsg()->BP5Ignited(),
-                      (int)msg->FCMsg()->BP6Continuity(),
-                      (int)msg->FCMsg()->BP6Ignited(),
-                      (int)msg->FCMsg()->BP7Continuity(),
-                      (int)msg->FCMsg()->BP7Ignited());
+            const FCUpdateMsg *fc = msg->FCMsg();
+            pc.printf(
+                ", ((state: %d, accel: %f, %f %f, mag: %f, %f, %f, gyro: %f, %f, %f, alt: %f, pressure: %f, bps: %d %d, %d %d, %d %d, %d %d, %d %d, %d %d, %d %d))",
+                (int) fc->State(), fc->AccelX(), fc->AccelY(), fc->AccelZ(),
+                fc->MagX(), fc->MagY(), fc->MagZ(),
+                fc->GyroX(), fc->GyroY(), fc->GyroZ(),
+                fc->Altitude(), fc->Pressure(),
+                (int)msg->FCMsg()->BP1Continuity(),
+                (int)msg->FCMsg()->BP1Ignited(),
+                (int)msg->FCMsg()->BP2Continuity(),
+                (int)msg->FCMsg()->BP2Ignited(),
+                (int)msg->FCMsg()->BP3Continuity(),
+                (int)msg->FCMsg()->BP3Ignited(),
+                (int)msg->FCMsg()->BP4Continuity(),
+                (int)msg->FCMsg()->BP4Ignited(),
+                (int)msg->FCMsg()->BP5Continuity(),
+                (int)msg->FCMsg()->BP5Ignited(),
+                (int)msg->FCMsg()->BP6Continuity(),
+                (int)msg->FCMsg()->BP6Ignited(),
+                (int)msg->FCMsg()->BP7Continuity(),
+                (int)msg->FCMsg()->BP7Ignited());
           }
           pc.printf("\r\n");
         }
@@ -210,8 +219,11 @@ void loop() {
           sendAck(msg->FrameID());
         }
       } else {
-        // pc.printf("Failed read\r\n");
       }
+    }
+    if (failed) {
+      // pc.printf("[!RSSI=%d, bytes: %d]! Failed Flatbuf Deserialize\r\n",
+      //           radio.getRSSI(), num_bytes_rxd - 1);
     }
   }
 }
@@ -270,6 +282,7 @@ bool sendUplinkMsg(const std::string &str, bool with_ack) {
 
   ++frame_id;
 }
+
 uint8_t ret_buf[FLATBUF_BUF_SIZE];
 const DownlinkMsg *getDownlinkMsgChar(char c) {
   static uint8_t buffer[FLATBUF_BUF_SIZE];
