@@ -10,7 +10,8 @@
 #define DEBUG_UART_BAUDRATE (115200)
 #define RS422_BAUDRATE (115200)
 #define GPS_BAUDRATE (9600) // Must be 9600
-#define MSG_SEND_INTERVAL_US (250000u) // 250*1000us = 250ms
+#define MSG_SEND_INTERVAL_US   (500000u) // 500*1000us = 500ms
+#define RADIO_SEND_INTERVAL_US (100000u) // 100*1000us = 100ms
 #define BUF_SIZE (256)
 // random 16 bytes that must be the same across all nodes
 #define ENCRYPT_KEY ("CALSTARENCRYPTKE")
@@ -51,6 +52,11 @@ uint8_t gps_read_buf[BUF_SIZE];
 std::string gps_sentence_builder;
 std::string gpsLatestData;
 
+uint8_t remaining_send_buf[BUF_SIZE];
+int remaining_send_size = 0;
+int remaining_send_buf_start = 0;
+us_timestamp_t last_radio_send_us;
+
 void start() {
     fcPower = 0;
 
@@ -86,17 +92,26 @@ void loop() {
             (int)fcPower,
             (int)builder.GetSize());
 
-        // Send over radio
+        // Transfer into send buffer
         uint8_t *buf = builder.GetBufferPointer();
         int size = builder.GetSize();
-        int bytesSent = 0;
-        while (bytesSent != size) {
-            buf += bytesSent;
-            size -= bytesSent;
-            bytesSent = radio.send(buf, size);
-        }
+
+        memcpy(remaining_send_buf, buf, size);
+        remaining_send_size = size;
+        remaining_send_buf_start = 0;
 
         last_msg_send_us = current_time;
+    }
+    current_time = msgTimer.read_high_resolution_us();
+    if (current_time >= last_radio_send_us + RADIO_SEND_INTERVAL_US) {
+        if (remaining_send_size > 0) {
+            // Send over radio
+            int bytesSent = radio.send(remaining_send_buf + remaining_send_buf_start, remaining_send_size);
+            remaining_send_size -= bytesSent;
+            remaining_send_buf_start += bytesSent;
+
+            last_radio_send_us = current_time;
+        }
     }
     // Always read messages
     while (rs422.readable()) {
@@ -131,7 +146,7 @@ void loop() {
         size_t crlf_pos = gps_sentence_builder.find("\r\n");
         if (crlf_pos != std::string::npos) {
             std::string newSentence = gps_sentence_builder.substr(0, crlf_pos);
-            if (newSentence.substr(0, 6) == "$GPGGA" || newSentence.substr(0, 6) == "$GPRMC") {
+            if (newSentence.substr(0, 6) == "$GPGGA") {// || newSentence.substr(0, 6) == "$GPRMC") {
                 gpsLatestData = newSentence;
                 debug_uart.printf("GPS: \"%s\"\r\n", newSentence.c_str());
             }
