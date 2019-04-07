@@ -5,6 +5,8 @@
 #include "mbed.h"
 #include "pins.h"
 
+#include "MPL3115A2.h"
+
 #define DEBUG_UART_BAUDRATE (115200)
 #define RS422_BAUDRATE (115200)
 #define MSG_SEND_INTERVAL_US (100000u) // 100*1000us = 100ms
@@ -28,6 +30,9 @@ DigitalOut led_blue(STATE_LED_BLUE);
 
 UARTSerial rs422(RS422_TX, RS422_RX, RS422_BAUDRATE);
 Serial debug_uart(DEBUG_TX, DEBUG_RX, DEBUG_UART_BAUDRATE);
+
+I2C mpl_i2c(I2C_SENSOR_SDA, I2C_SENSOR_SCL);
+MPL3115A2 alt(&mpl_i2c, &debug_uart);
 
 us_timestamp_t last_msg_send_us;
 
@@ -105,6 +110,11 @@ void start() {
 
     debug_uart.set_blocking(false);
     debug_uart.printf("---- CalSTAR Flight Computer ----\r\n");
+
+    debug_uart.printf("Initializing altimeter@0x%X:\r\n", MPL3115A2_ADDRESS);
+    alt.init();
+    debug_uart.printf("altimiter whoami: 0x%X\r\n", alt.whoAmI());
+    
 
     buildCurrentMessage();
 
