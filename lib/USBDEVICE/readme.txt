@@ -1,0 +1,1 @@
+This contains STM support for USB device based on STM HAL , present in mbed official delivery.
