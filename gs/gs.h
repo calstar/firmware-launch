@@ -198,31 +198,41 @@ void loop() {
                         BATUINT_TO_FLOAT(msg->BattVoltage()));
                     if (msg->FCMsg()) {
                         const FCUpdateMsg *fc = msg->FCMsg();
-                        pc.printf(", ((state: %d, accel: %f, "
-                                  "%f %f, mag: %f, %f, %f, "
-                                  "gyro: %f, "
-                                  "%f, %f, alt: %f, "
-                                  "pressure: %f, bps: %d %d, "
-                                  "%d %d, %d %d, %d "
-                                  "%d, %d %d, %d %d, %d %d))",
-                                  (int)fc->State(), fc->AccelX(), fc->AccelY(),
-                                  fc->AccelZ(), fc->MagX(), fc->MagY(),
-                                  fc->MagZ(), fc->GyroX(), fc->GyroY(),
-                                  fc->GyroZ(), fc->Altitude(), fc->Pressure(),
-                                  (int)msg->FCMsg()->BP1Continuity(),
-                                  (int)msg->FCMsg()->BP1Ignited(),
-                                  (int)msg->FCMsg()->BP2Continuity(),
-                                  (int)msg->FCMsg()->BP2Ignited(),
-                                  (int)msg->FCMsg()->BP3Continuity(),
-                                  (int)msg->FCMsg()->BP3Ignited(),
-                                  (int)msg->FCMsg()->BP4Continuity(),
-                                  (int)msg->FCMsg()->BP4Ignited(),
-                                  (int)msg->FCMsg()->BP5Continuity(),
-                                  (int)msg->FCMsg()->BP5Ignited(),
-                                  (int)msg->FCMsg()->BP6Continuity(),
-                                  (int)msg->FCMsg()->BP6Ignited(),
-                                  (int)msg->FCMsg()->BP7Continuity(),
-                                  (int)msg->FCMsg()->BP7Ignited());
+                        pc.printf(", ((state: %d, alt: %f, "
+                                "bps: %d %d, %d %d, %d %d, %d %d, %d %d, %d %d, %d %d))",
+                                (int)fc->State(), fc->Altitude(),
+                                (int)fc->BP1Continuity(), (int)fc->BP1Ignited(),
+                                (int)fc->BP2Continuity(), (int)fc->BP2Ignited(),
+                                (int)fc->BP3Continuity(), (int)fc->BP3Ignited(),
+                                (int)fc->BP4Continuity(), (int)fc->BP4Ignited(),
+                                (int)fc->BP5Continuity(), (int)fc->BP5Ignited(),
+                                (int)fc->BP6Continuity(), (int)fc->BP6Ignited(),
+                                (int)fc->BP7Continuity(), (int)fc->BP7Ignited());
+                        // pc.printf(", ((state: %d, accel: %f, "
+                        //           "%f %f, mag: %f, %f, %f, "
+                        //           "gyro: %f, "
+                        //           "%f, %f, alt: %f, "
+                        //           "pressure: %f, bps: %d %d, "
+                        //           "%d %d, %d %d, %d "
+                        //           "%d, %d %d, %d %d, %d %d))",
+                        //           (int)fc->State(), fc->AccelX(), fc->AccelY(),
+                        //           fc->AccelZ(), fc->MagX(), fc->MagY(),
+                        //           fc->MagZ(), fc->GyroX(), fc->GyroY(),
+                        //           fc->GyroZ(), fc->Altitude(), fc->Pressure(),
+                        //           (int)msg->FCMsg()->BP1Continuity(),
+                        //           (int)msg->FCMsg()->BP1Ignited(),
+                        //           (int)msg->FCMsg()->BP2Continuity(),
+                        //           (int)msg->FCMsg()->BP2Ignited(),
+                        //           (int)msg->FCMsg()->BP3Continuity(),
+                        //           (int)msg->FCMsg()->BP3Ignited(),
+                        //           (int)msg->FCMsg()->BP4Continuity(),
+                        //           (int)msg->FCMsg()->BP4Ignited(),
+                        //           (int)msg->FCMsg()->BP5Continuity(),
+                        //           (int)msg->FCMsg()->BP5Ignited(),
+                        //           (int)msg->FCMsg()->BP6Continuity(),
+                        //           (int)msg->FCMsg()->BP6Ignited(),
+                        //           (int)msg->FCMsg()->BP7Continuity(),
+                        //           (int)msg->FCMsg()->BP7Ignited());
                     }
                     pc.printf("\r\n");
                 }

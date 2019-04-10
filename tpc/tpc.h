@@ -123,6 +123,7 @@ void loop() {
             const FCUpdateMsg *msg = getFCUpdateMsg(rs422_read_buf[i]);
             if (msg) {
                 fcLatestData = msg;
+                debug_uart.printf("Read alt=%f ft\r\n", fcLatestData->Altitude());
             }
         }
     }
@@ -346,18 +347,17 @@ void buildCurrentMessage() {
     if (fcLatestData) {
         fcUpdateMsg = CreateFCUpdateMsg(
             builder, fcLatestData->Bytes(), fcLatestData->State(),
-            fcLatestData->AccelX(), fcLatestData->AccelY(),
-            fcLatestData->AccelZ(), fcLatestData->MagX(), fcLatestData->MagY(),
-            fcLatestData->MagZ(), fcLatestData->GyroX(), fcLatestData->GyroY(),
-            fcLatestData->GyroZ(), fcLatestData->Altitude(),
-            fcLatestData->Pressure(), fcLatestData->BP1Continuity(),
-            fcLatestData->BP1Ignited(), fcLatestData->BP2Continuity(),
-            fcLatestData->BP2Ignited(), fcLatestData->BP3Continuity(),
-            fcLatestData->BP3Ignited(), fcLatestData->BP4Continuity(),
-            fcLatestData->BP4Ignited(), fcLatestData->BP5Continuity(),
-            fcLatestData->BP5Ignited(), fcLatestData->BP6Continuity(),
-            fcLatestData->BP6Ignited(), fcLatestData->BP7Continuity(),
-            fcLatestData->BP7Ignited());
+            // fcLatestData->AccelX(), fcLatestData->AccelY(), fcLatestData->AccelZ(),
+            // fcLatestData->MagX(), fcLatestData->MagY(), fcLatestData->MagZ(),
+            // fcLatestData->GyroX(), fcLatestData->GyroY(), fcLatestData->GyroZ(),
+            fcLatestData->Altitude(),// fcLatestData->Pressure(),
+            fcLatestData->BP1Continuity(), fcLatestData->BP1Ignited(),
+            fcLatestData->BP2Continuity(), fcLatestData->BP2Ignited(),
+            fcLatestData->BP3Continuity(), fcLatestData->BP3Ignited(),
+            fcLatestData->BP4Continuity(), fcLatestData->BP4Ignited(),
+            fcLatestData->BP5Continuity(), fcLatestData->BP5Ignited(),
+            fcLatestData->BP6Continuity(), fcLatestData->BP6Ignited(),
+            fcLatestData->BP7Continuity(), fcLatestData->BP7Ignited());
     } else {
         // Null it if we don't have any FC data yet
         fcUpdateMsg = 0;
@@ -375,18 +375,17 @@ void buildCurrentMessage() {
     if (fcLatestData) {
         fcUpdateMsg = CreateFCUpdateMsg(
             builder, fcLatestData->Bytes(), fcLatestData->State(),
-            fcLatestData->AccelX(), fcLatestData->AccelY(),
-            fcLatestData->AccelZ(), fcLatestData->MagX(), fcLatestData->MagY(),
-            fcLatestData->MagZ(), fcLatestData->GyroX(), fcLatestData->GyroY(),
-            fcLatestData->GyroZ(), fcLatestData->Altitude(),
-            fcLatestData->Pressure(), fcLatestData->BP1Continuity(),
-            fcLatestData->BP1Ignited(), fcLatestData->BP2Continuity(),
-            fcLatestData->BP2Ignited(), fcLatestData->BP3Continuity(),
-            fcLatestData->BP3Ignited(), fcLatestData->BP4Continuity(),
-            fcLatestData->BP4Ignited(), fcLatestData->BP5Continuity(),
-            fcLatestData->BP5Ignited(), fcLatestData->BP6Continuity(),
-            fcLatestData->BP6Ignited(), fcLatestData->BP7Continuity(),
-            fcLatestData->BP7Ignited());
+            // fcLatestData->AccelX(), fcLatestData->AccelY(), fcLatestData->AccelZ(),
+            // fcLatestData->MagX(), fcLatestData->MagY(), fcLatestData->MagZ(),
+            // fcLatestData->GyroX(), fcLatestData->GyroY(), fcLatestData->GyroZ(),
+            fcLatestData->Altitude(),// fcLatestData->Pressure(),
+            fcLatestData->BP1Continuity(), fcLatestData->BP1Ignited(),
+            fcLatestData->BP2Continuity(), fcLatestData->BP2Ignited(),
+            fcLatestData->BP3Continuity(), fcLatestData->BP3Ignited(),
+            fcLatestData->BP4Continuity(), fcLatestData->BP4Ignited(),
+            fcLatestData->BP5Continuity(), fcLatestData->BP5Ignited(),
+            fcLatestData->BP6Continuity(), fcLatestData->BP6Ignited(),
+            fcLatestData->BP7Continuity(), fcLatestData->BP7Ignited());
     } else {
         // Null it if we don't have any FC data yet
         fcUpdateMsg = 0;

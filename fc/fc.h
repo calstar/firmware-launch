@@ -33,6 +33,7 @@ Serial debug_uart(DEBUG_TX, DEBUG_RX, DEBUG_UART_BAUDRATE);
 
 I2C mpl_i2c(I2C_SENSOR_SDA, I2C_SENSOR_SCL);
 MPL3115A2 alt(&mpl_i2c, &debug_uart);
+float last_alt = 0;
 
 us_timestamp_t last_msg_send_us;
 
@@ -97,6 +98,11 @@ void loop() {
             debug_uart.printf("\r\n");
         }
     }
+
+    Altitude alt_result;
+    alt.readAltitude(&alt_result);
+    last_alt = alt_result.altitude(Altitude::FEET);
+    debug_uart.printf("Read altitude: %f ft\r\n", last_alt);
 }
 
 void start() {
@@ -113,6 +119,10 @@ void start() {
 
     debug_uart.printf("Initializing altimeter@0x%X:\r\n", MPL3115A2_ADDRESS);
     alt.init();
+    alt.setOversampleRate(0b000);
+    alt.setModeStandby();
+    alt.setModeAltimeter();
+    alt.setModeActive();
     debug_uart.printf("altimiter whoami: 0x%X\r\n", alt.whoAmI());
     
 
@@ -192,10 +202,10 @@ void buildCurrentMessage() {
     Offset<FCUpdateMsg> message = CreateFCUpdateMsg(builder,
         1, // Can't be 0 or it will be ignored
         FCState_Pad,
-        0.0f, 1.0f, 2.0f,
-        3.0f, 4.0f, 5.0f,
-        6.0f, 7.0f, 8.0f,
-        9.0f, 10.0f,
+        // 0.0f, 1.0f, 2.0f,
+        // 3.0f, 4.0f, 5.0f,
+        // 6.0f, 7.0f, 8.0f,
+        last_alt, //10.0f,
         false, bpIgnited[0],
         true, bpIgnited[1],
         false, bpIgnited[2],
@@ -210,10 +220,10 @@ void buildCurrentMessage() {
     message = CreateFCUpdateMsg(builder,
         bytes, // Fill in actual number of bytes
         FCState_Pad,
-        0.0f, 1.0f, 2.0f,
-        3.0f, 4.0f, 5.0f,
-        6.0f, 7.0f, 8.0f,
-        9.0f, 10.0f,
+        // 0.0f, 1.0f, 2.0f,
+        // 3.0f, 4.0f, 5.0f,
+        // 6.0f, 7.0f, 8.0f,
+        last_alt, //10.0f,
         false, bpIgnited[0],
         true, bpIgnited[1],
         false, bpIgnited[2],
