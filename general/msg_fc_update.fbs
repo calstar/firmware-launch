@@ -6,7 +6,7 @@ enum FCState : byte { Pad = 0, Flight = 1 /* add others to match the state machi
 table FCUpdateMsg {
     Bytes : uint8;
     State : FCState;
-    AccelX : float;
+    /*AccelX : float;
     AccelY : float;
     AccelZ : float;
     MagX : float;
@@ -14,9 +14,9 @@ table FCUpdateMsg {
     MagZ : float;
     GyroX : float;
     GyroY : float;
-    GyroZ : float;
+    GyroZ : float;*/
     Altitude : float;
-    Pressure : float;
+    /*Pressure : float;*/
     BP1Continuity : bool;
     BP1Ignited : bool;
     BP2Continuity : bool;
