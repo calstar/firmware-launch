@@ -148,7 +148,7 @@ void loop() {
                 if (acks_remaining.count(msg->FrameID()) == 1) {
                     acks_remaining.erase(msg->FrameID());
                 }
-                debug_uart.printf("\r\n");
+                debug_uart.printf("Received Ack for Message: %d\r\n", msg->FrameID());
             }
         }
     }
