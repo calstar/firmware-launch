@@ -3,6 +3,7 @@ namespace Calstar;
 /* This is sent over radio as well so it should be kept small */
 
 enum FCState : byte { Pad = 0, Flight = 1 /* add others to match the state machine in the FC firmware */ }
+enum FCUpdateType : byte { StateUpdate = 0, Ack = 1 }
 table FCUpdateMsg {
     Bytes : uint8;
     State : FCState;
@@ -31,6 +32,8 @@ table FCUpdateMsg {
     BP6Ignited : bool;
     BP7Continuity : bool;
     BP7Ignited : bool;
+    Type : FCUpdateType;
+    FrameID : uint8;
 }
 
 root_type FCUpdateMsg;

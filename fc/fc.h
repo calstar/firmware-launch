@@ -80,6 +80,9 @@ void loop() {
                 }
                 led_green = !bpIgnited[0];
                 led_blue = !bpIgnited[1];
+                if (msg->AckReqd()) {
+                    sendAck(msg->FrameID());
+                }
             }
         }
     }
@@ -124,7 +127,7 @@ void start() {
     alt.setModeAltimeter();
     alt.setModeActive();
     debug_uart.printf("altimiter whoami: 0x%X\r\n", alt.whoAmI());
-    
+
 
     buildCurrentMessage();
 
@@ -212,7 +215,8 @@ void buildCurrentMessage() {
         true, bpIgnited[3],
         false, bpIgnited[4],
         true, bpIgnited[5],
-        false, bpIgnited[6]);
+        false, bpIgnited[6],
+        FCUpdateType_StateUpdate, 0);
     builder.Finish(message);
 
     uint8_t bytes = (uint8_t)builder.GetSize();
@@ -223,13 +227,55 @@ void buildCurrentMessage() {
         // 0.0f, 1.0f, 2.0f,
         // 3.0f, 4.0f, 5.0f,
         // 6.0f, 7.0f, 8.0f,
-        last_alt, //10.0f,
+        0.0f, //10.0f,
         false, bpIgnited[0],
         true, bpIgnited[1],
         false, bpIgnited[2],
         true, bpIgnited[3],
         false, bpIgnited[4],
         true, bpIgnited[5],
-        false, bpIgnited[6]);
+        false, bpIgnited[6],
+        FCUpdateType_StateUpdate, 0);
     builder.Finish(message);
+}
+
+void sendAck(uint8_t frame_id) {
+    builder.Reset();
+    Offset<FCUpdateMsg> message = CreateFCUpdateMsg(builder,
+        1, // Can't be 0 or it will be ignored
+        FCState_Pad,
+        // 0.0f, 1.0f, 2.0f,
+        // 3.0f, 4.0f, 5.0f,
+        // 6.0f, 7.0f, 8.0f,
+        0.0f, //10.0f,
+        false, bpIgnited[0],
+        true, bpIgnited[1],
+        false, bpIgnited[2],
+        true, bpIgnited[3],
+        false, bpIgnited[4],
+        true, bpIgnited[5],
+        false, bpIgnited[6],
+        FCUpdateType_Ack, frame_id);
+    builder.Finish(message);
+
+    const uint8_t bytes = (uint8_t)builder.GetSize();
+    builder.Reset();
+    ack = CreateFCUpdateMsg(builder,
+        bytes, // Fill in actual number of bytes
+        FCState_Pad,
+        // 0.0f, 1.0f, 2.0f,
+        // 3.0f, 4.0f, 5.0f,
+        // 6.0f, 7.0f, 8.0f,
+        0.0f, //10.0f,
+        false, bpIgnited[0],
+        true, bpIgnited[1],
+        false, bpIgnited[2],
+        true, bpIgnited[3],
+        false, bpIgnited[4],
+        true, bpIgnited[5],
+        false, bpIgnited[6],
+        FCUpdateType_Ack, frame_id);
+    builder.Finish(ack);
+
+    rs422.write(builder.GetBufferPointer(), builder.GetSize());
 }
