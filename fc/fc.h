@@ -42,8 +42,11 @@ void loop() {
     // Send a message every MSG_SEND_INTERVAL_US microseconds
     us_timestamp_t current_time = msgTimer.read_high_resolution_us();
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
+        buildCurrentMessage();
+
         uint8_t *buf = builder.GetBufferPointer();
         int size = builder.GetSize();
+
         rs422.write(buf, size);
 
         // also just toggle the red LED at this point
@@ -65,9 +68,6 @@ void loop() {
                         bpIgnited[bp] |= msg->BP()->Get(bp);
                     }
 
-                    // Update the message being sent out to T/PC
-                    buildCurrentMessage();
-
                     debug_uart.printf("Received BlackPowderPulse -->\r\n");
                     debug_uart.printf("    Current ignited state: ");
                     for (int bp = 0; bp < NUM_BP; bp++) {
@@ -78,8 +78,8 @@ void loop() {
                     }
                     debug_uart.printf("\r\n");
                 }
-                // led_green = !bpIgnited[0];
-                // led_blue = !bpIgnited[1];
+                led_green = !bpIgnited[0];
+                led_blue = !bpIgnited[1];
             }
         }
     }
@@ -107,11 +107,8 @@ void loop() {
 
 void start() {
     led_red = 0;
-    // led_green = !bpIgnited[0];
-    // led_blue = !bpIgnited[1];
-    led_green = 1;
-    led_blue = 1;
-
+    led_green = !bpIgnited[0];
+    led_blue = !bpIgnited[1];
     msgTimer.start();
 
     // rs422.set_blocking(true);
@@ -206,23 +203,31 @@ const UplinkMsg *getUplinkMsg(char c) {
 
 void buildCurrentMessage() {
     builder.Reset();
-    Offset<FCUpdateMsg> message = CreateFCUpdateMsg(
-        builder,
-        1, // Can't be 0 or it will be ignored
-        FCState_Pad, 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f,
-        10.0f, false, bpIgnited[0], true, bpIgnited[1], false, bpIgnited[2],
-        true, bpIgnited[3], false, bpIgnited[4], true, bpIgnited[5], false,
-        bpIgnited[6]);
-   builder.Finish(message);
+    Offset<FCUpdateMsg> message =
+        CreateFCUpdateMsg(builder,
+                          1, // Can't be 0 or it will be ignored
+                          FCState_Pad,
+                          // 0.0f, 1.0f, 2.0f,
+                          // 3.0f, 4.0f, 5.0f,
+                          // 6.0f, 7.0f, 8.0f,
+                          last_alt, // 10.0f,
+                          false, bpIgnited[0], true, bpIgnited[1], false,
+                          bpIgnited[2], true, bpIgnited[3], false, bpIgnited[4],
+                          true, bpIgnited[5], false, bpIgnited[6]);
+    builder.Finish(message);
 
     uint8_t bytes = (uint8_t)builder.GetSize();
     builder.Reset();
-    message = CreateFCUpdateMsg(
-        builder,
-        bytes, // Fill in actual number of bytes
-        FCState_Pad, 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f,
-        10.0f, false, bpIgnited[0], true, bpIgnited[1], false, bpIgnited[2],
-        true, bpIgnited[3], false, bpIgnited[4], true, bpIgnited[5], false,
-        bpIgnited[6]);
-   builder.Finish(message);
+    message =
+        CreateFCUpdateMsg(builder,
+                          bytes, // Fill in actual number of bytes
+                          FCState_Pad,
+                          // 0.0f, 1.0f, 2.0f,
+                          // 3.0f, 4.0f, 5.0f,
+                          // 6.0f, 7.0f, 8.0f,
+                          last_alt, // 10.0f,
+                          false, bpIgnited[0], true, bpIgnited[1], false,
+                          bpIgnited[2], true, bpIgnited[3], false, bpIgnited[4],
+                          true, bpIgnited[5], false, bpIgnited[6]);
+    builder.Finish(message);
 }
