@@ -6,9 +6,6 @@ obj/
 *.swp
 *_generated.h
 
-mbed-os/*
-!mbed-os/tools/profiles/
-
 BUILD/
 mbed_settings.pyc
 
