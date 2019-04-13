@@ -1,4 +1,4 @@
-# launch-firmware
+# firmware-launch
 For firmware used on boards during launch.
 
 # How to build

@@ -23,6 +23,7 @@
 #include "msg_downlink_generated.h"
 #include "msg_fc_update_generated.h"
 #include "msg_uplink_generated.h"
+#include "json_messages.h"
 
 #include "mbed.h"
 #include "pins.h"
@@ -53,6 +54,10 @@ using namespace Calstar;
 #define MAX_NUM_RETRIES (50)
 
 #define BATUINT_TO_FLOAT(a) (((float)(a)) / 3308.4751259079328064817304607171f)
+
+// If enabled, turns off other debug printings
+#define JSON_LOGGING
+
 /****************Global Variables***************/
 DigitalOut rx_led(LED_RX);
 DigitalOut tx_led(LED_TX);
@@ -77,8 +82,7 @@ int32_t t_last_resend;
 uint8_t frame_id;
 
 // frame_id, <buffer size, buffer, number of retries>
-std::unordered_map<uint8_t, std::pair<std::vector<uint8_t>, uint8_t>>
-    acks_remaining;
+std::unordered_map<uint8_t, std::pair<std::vector<uint8_t>, uint8_t>> acks_remaining;
 
 FlatBufferBuilder builder(FLATBUF_BUF_SIZE);
 
@@ -90,6 +94,10 @@ const DownlinkMsg *getDownlinkMsgChar(char c);
 const DownlinkMsg *getDownlinkMsg(uint8_t *data, int32_t data_len);
 void resend_msgs();
 void sendAck(uint8_t frame_id);
+
+void sendJsonInt(uint64_t timestamp, const std::string &id, int value);
+void sendJsonFloat(uint64_t timestamp, const std::string &id, float value);
+void sendJsonString(uint64_t timestamp, const std::string &id, const std::string &value);
 
 int main() {
     start();
@@ -138,26 +146,35 @@ void loop() {
         if (in == '\n') {
             if (line == COMMAND_YES_RETRY) {
                 retry = true;
+                #ifndef JSON_LOGGING
                 pc.printf("%s\r\n", line.c_str());
+                #endif
             } else if (line == COMMAND_NO_RETRY) {
                 retry = false;
+                #ifndef JSON_LOGGING
                 pc.printf("%s\r\n", line.c_str());
+                #endif
             } else {
                 if (retry) {
+                    #ifndef JSON_LOGGING
                     pc.printf("![SENDING WITH RETRY '%s', "
                               "bytes: %d]!\r\n",
                               line.c_str(), line.length());
+                    #endif
                     line += '\n';
                     tx_led = 1;
-                    pc.putc('a');
                     sendUplinkMsg(line, true);
                     t_tx_led_on = t.read_ms();
+                    #ifndef JSON_LOGGING
                     pc.printf("\r\nOut of send up link "
                               "message true\r\n");
+                    #endif
                 } else {
+                    #ifndef JSON_LOGGING
                     pc.printf("![SENDING ONCE ' %s ', "
                               "bytes: %d]!\r\n",
                               line.c_str(), line.length());
+                    #endif
                     line += '\n';
                     tx_led = 1;
                     pc.putc('b');
@@ -181,14 +198,21 @@ void loop() {
             const DownlinkMsg *msg = getDownlinkMsgChar(rx_buf[i + 1]);
             if (msg != nullptr) {
                 failed = false;
-                pc.printf("![RSSI=%d, bytes: %d]!", radio.getRSSI(),
-                          num_bytes_rxd - 1);
+                #ifndef JSON_LOGGING
+                pc.printf("![RSSI=%d, bytes: %d]!", radio.getRSSI(), num_bytes_rxd - 1);
+                #endif
+
+                sendJsonInt(msg->TimeStamp(), GS_RSSI, radio.getRSSI());
+                
                 if (msg->Type() == DownlinkType_Ack) {
                     if (acks_remaining.count(msg->FrameID()) == 1) {
                         acks_remaining.erase(msg->FrameID());
                     }
+                    #ifndef JSON_LOGGING
                     pc.printf("\r\n");
+                    #endif
                 } else if (msg->Type() == DownlinkType_StateUpdate) {
+                    #ifndef JSON_LOGGING
                     pc.printf(
                         "tstamp: %" PRIu64 ", bytes: %d, state: %d, fc.pwr: "
                         "%d, "
@@ -196,35 +220,62 @@ void loop() {
                         msg->TimeStamp(), (int)msg->Bytes(), (int)msg->State(),
                         (int)msg->FCPowered(), msg->GPSString()->str().c_str(),
                         BATUINT_TO_FLOAT(msg->BattVoltage()));
+                    #endif
+
+
+                    sendJsonInt(msg->TimeStamp(), COMMS_RECD, msg->Bytes());
+                    sendJsonInt(msg->TimeStamp(), TPC_STATE, (int)msg->State());
+                    sendJsonInt(msg->TimeStamp(), FC_PWRD, (int)msg->FCPowered());
+                    sendJsonString(msg->TimeStamp(), TPC_GPS, msg->GPSString()->c_str());
+                    sendJsonFloat(msg->TimeStamp(), TPC_BATV, BATUINT_TO_FLOAT(msg->BattVoltage()));
+
                     if (msg->FCMsg()) {
                         const FCUpdateMsg *fc = msg->FCMsg();
-                        pc.printf(", ((state: %d, accel: %f, "
-                                  "%f %f, mag: %f, %f, %f, "
-                                  "gyro: %f, "
-                                  "%f, %f, alt: %f, "
-                                  "pressure: %f, bps: %d %d, "
-                                  "%d %d, %d %d, %d "
-                                  "%d, %d %d, %d %d, %d %d))",
-                                  (int)fc->State(), fc->AccelX(), fc->AccelY(),
-                                  fc->AccelZ(), fc->MagX(), fc->MagY(),
-                                  fc->MagZ(), fc->GyroX(), fc->GyroY(),
-                                  fc->GyroZ(), fc->Altitude(), fc->Pressure(),
-                                  (int)msg->FCMsg()->BP1Continuity(),
-                                  (int)msg->FCMsg()->BP1Ignited(),
-                                  (int)msg->FCMsg()->BP2Continuity(),
-                                  (int)msg->FCMsg()->BP2Ignited(),
-                                  (int)msg->FCMsg()->BP3Continuity(),
-                                  (int)msg->FCMsg()->BP3Ignited(),
-                                  (int)msg->FCMsg()->BP4Continuity(),
-                                  (int)msg->FCMsg()->BP4Ignited(),
-                                  (int)msg->FCMsg()->BP5Continuity(),
-                                  (int)msg->FCMsg()->BP5Ignited(),
-                                  (int)msg->FCMsg()->BP6Continuity(),
-                                  (int)msg->FCMsg()->BP6Ignited(),
-                                  (int)msg->FCMsg()->BP7Continuity(),
-                                  (int)msg->FCMsg()->BP7Ignited());
+
+                        sendJsonInt(msg->TimeStamp(), FC_STATE, (int)fc->State());
+                        sendJsonFloat(msg->TimeStamp(), FC_ALT, fc->Altitude());
+
+                        #ifndef JSON_LOGGING
+                        pc.printf(", ((state: %d, alt: %f, "
+                                "bps: %d %d, %d %d, %d %d, %d %d, %d %d, %d %d, %d %d))",
+                                (int)fc->State(), fc->Altitude(),
+                                (int)fc->BP1Continuity(), (int)fc->BP1Ignited(),
+                                (int)fc->BP2Continuity(), (int)fc->BP2Ignited(),
+                                (int)fc->BP3Continuity(), (int)fc->BP3Ignited(),
+                                (int)fc->BP4Continuity(), (int)fc->BP4Ignited(),
+                                (int)fc->BP5Continuity(), (int)fc->BP5Ignited(),
+                                (int)fc->BP6Continuity(), (int)fc->BP6Ignited(),
+                                (int)fc->BP7Continuity(), (int)fc->BP7Ignited());
+                        // pc.printf(", ((state: %d, accel: %f, "
+                        //           "%f %f, mag: %f, %f, %f, "
+                        //           "gyro: %f, "
+                        //           "%f, %f, alt: %f, "
+                        //           "pressure: %f, bps: %d %d, "
+                        //           "%d %d, %d %d, %d "
+                        //           "%d, %d %d, %d %d, %d %d))",
+                        //           (int)fc->State(), fc->AccelX(), fc->AccelY(),
+                        //           fc->AccelZ(), fc->MagX(), fc->MagY(),
+                        //           fc->MagZ(), fc->GyroX(), fc->GyroY(),
+                        //           fc->GyroZ(), fc->Altitude(), fc->Pressure(),
+                        //           (int)msg->FCMsg()->BP1Continuity(),
+                        //           (int)msg->FCMsg()->BP1Ignited(),
+                        //           (int)msg->FCMsg()->BP2Continuity(),
+                        //           (int)msg->FCMsg()->BP2Ignited(),
+                        //           (int)msg->FCMsg()->BP3Continuity(),
+                        //           (int)msg->FCMsg()->BP3Ignited(),
+                        //           (int)msg->FCMsg()->BP4Continuity(),
+                        //           (int)msg->FCMsg()->BP4Ignited(),
+                        //           (int)msg->FCMsg()->BP5Continuity(),
+                        //           (int)msg->FCMsg()->BP5Ignited(),
+                        //           (int)msg->FCMsg()->BP6Continuity(),
+                        //           (int)msg->FCMsg()->BP6Ignited(),
+                        //           (int)msg->FCMsg()->BP7Continuity(),
+                        //           (int)msg->FCMsg()->BP7Ignited());
+                        #endif
                     }
+                    #ifndef JSON_LOGGING
                     pc.printf("\r\n");
+                    #endif
                 }
                 if (msg->AckReqd()) {
                     sendAck(msg->FrameID());
@@ -241,7 +292,6 @@ void loop() {
 }
 
 bool sendUplinkMsg(const std::string &str, bool with_ack) {
-    pc.printf("0");
     builder.Reset();
 
     uint8_t bps[7] = {0, 0, 0, 0, 0, 0, 0};
@@ -251,7 +301,9 @@ bool sendUplinkMsg(const std::string &str, bool with_ack) {
         type = UplinkType_FCOn;
     } else if (str[0] == 'b') {
         type = UplinkType_BlackPowderPulse;
+        #ifndef JSON_LOGGING
         pc.printf("%s\r\n", str.c_str());
+        #endif
         if (str.length() >= 8) {
             for (int32_t i = 1; i < 8; ++i) {
                 if (str[i] == '1') {
@@ -269,27 +321,22 @@ bool sendUplinkMsg(const std::string &str, bool with_ack) {
 
     auto blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
 
-    Offset<UplinkMsg> msg = CreateUplinkMsg(
-        builder, 1, type, blackpowder_offset, frame_id, with_ack);
+    Offset<UplinkMsg> msg = CreateUplinkMsg(builder, 1, type, blackpowder_offset, frame_id, with_ack);
     builder.Finish(msg);
 
     const uint8_t bytes = (uint8_t)builder.GetSize();
     builder.Reset();
     blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
-    msg = CreateUplinkMsg(builder, bytes, type, blackpowder_offset, frame_id,
-                          with_ack);
+    msg = CreateUplinkMsg(builder, bytes, type, blackpowder_offset, frame_id, with_ack);
     builder.Finish(msg);
 
     const uint8_t *buf = builder.GetBufferPointer();
     const int32_t size = builder.GetSize();
 
     if (with_ack) {
-        acks_remaining.insert(
-            {frame_id, {std::vector<uint8_t>(buf, buf + size), 0}});
-        pc.printf("1");
+        acks_remaining.insert({frame_id, {std::vector<uint8_t>(buf, buf + size), 0}});
     }
     radio.send(buf, size);
-    pc.printf("2");
 
     ++frame_id;
 }
@@ -365,13 +412,16 @@ const DownlinkMsg *getDownlinkMsgChar(char c) {
 void resend_msgs() {
     for (auto &msg : acks_remaining) {
         tx_led = 1;
+        #ifndef JSON_LOGGING
         pc.printf("![RESENDING FRAME '%d']!\r\n", (int)msg.first);
+        #endif
         const std::vector<uint8_t> &vec = std::get<0>(msg.second);
         radio.send(vec.data(), vec.size());
-        // pc.printf("Complete\r\n");
         std::get<1>(msg.second) = std::get<1>(msg.second) + 1;
         if (std::get<1>(msg.second) >= MAX_NUM_RETRIES) {
+            #ifndef JSON_LOGGING
             pc.printf("![FAILED TO SEND FRAME '%d']!\r\n", msg.first);
+            #endif
             acks_remaining.erase(msg.first);
         }
     }
@@ -382,12 +432,27 @@ void resend_msgs() {
 
 void sendAck(uint8_t frame_id) {
     builder.Reset();
-    Offset<UplinkMsg> ack =
-        CreateUplinkMsg(builder, 1, UplinkType_Ack, 0, frame_id, false);
+    Offset<UplinkMsg> ack = CreateUplinkMsg(builder, 1, UplinkType_Ack, 0, frame_id, false);
     builder.Finish(ack);
     const uint8_t bytes = builder.GetSize();
     builder.Reset();
     ack = CreateUplinkMsg(builder, bytes, UplinkType_Ack, 0, frame_id, false);
     builder.Finish(ack);
     radio.send(builder.GetBufferPointer(), builder.GetSize());
+}
+
+
+void sendJsonInt(uint64_t timestamp, const std::string &id, int value) {
+    pc.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": %d}\r\n", 
+        timestamp, id.c_str(), value);
+}
+
+void sendJsonFloat(uint64_t timestamp, const std::string &id, float value) {
+    pc.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": %f}\r\n", 
+        timestamp, id.c_str(), value);
+}
+
+void sendJsonString(uint64_t timestamp, const std::string &id, const std::string &value) {
+    pc.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": \"%s\"}\r\n", 
+        timestamp, id.c_str(), value.c_str());
 }

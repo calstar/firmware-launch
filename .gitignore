@@ -2,6 +2,7 @@
 ~*~
 .vs/
 obj/
+out/
 
 *.swp
 *_generated.h

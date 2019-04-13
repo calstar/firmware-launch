@@ -1,7 +1,7 @@
 build_target = NUCLEO_F401RE
 build_toolchain = GCC_ARM
 build_dir = BUILD
-project_name = launch-firmware
+project_name = firmware-launch
 
 outdir = out/
 outname = $(board).bin
