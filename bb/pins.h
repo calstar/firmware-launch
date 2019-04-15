@@ -16,4 +16,11 @@
 #define DEBUG_RX PA_3
 #define DEBUG_UART_BAUDRATE 115200
 
+#define SD_MISO PA_6
+#define SD_MOSI PA_7
+#define SD_SCLK PA_5
+
+#define SD1_CS PC_4
+#define SD2_CS PC_5
+
 #endif
