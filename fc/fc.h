@@ -17,22 +17,14 @@
 
 #define METERS(x) (x * 0.3048)
 #define LIST_LENGTH 50
-#define GROUND_SAMPLES 10000
-#define MIN_ALTITUDE 200
+#define GROUND_SAMPLES 1000
+#define MIN_ALTITUDE 400
 #define MAIN_CHUTE_THRESHOLD 600
-#define LAUNCH_THRESHOLD 10
+#define LAUNCH_THRESHOLD 100
+#define BP_ON_TIME_US (100000u) // Black powder on time, in microseconds
 
 using namespace flatbuffers;
 using namespace Calstar;
-
-enum LaunchState {
-    PRE_LAUNCH = 0b011,
-    ON_GROUND = 0b101,
-    LAUNCHED = 0b110,
-    PASSED_MIN_ALT = 0b001,
-    PASSED_APOGEE = 0b010,
-    PASSED_MAIN_CHUTE = 0b100
-};
 
 struct Node {
     Node* previous;
@@ -65,12 +57,13 @@ DigitalOut led_r(STATE_LED_RED);
 DigitalOut led_g(STATE_LED_GREEN);
 DigitalOut led_b(STATE_LED_BLUE);
 
-LaunchState state = PRE_LAUNCH;
+FCState state = FCState_Setup;
 
 Serial debug_uart(DEBUG_TX, DEBUG_RX, DEBUG_UART_BAUDRATE);
 I2C mpl_i2c(I2C_SENSOR_SDA, I2C_SENSOR_SCL);
 MPL3115A2 alt(&mpl_i2c, &debug_uart);
 Altitude altitude;
+float groundAltitude;
 Node* root = nullptr; // Altitude nodes, circular linked list
 Node* last = nullptr;
 
@@ -84,10 +77,10 @@ UARTSerial rs422(RS422_TX, RS422_RX, RS422_BAUDRATE);
 /* 
  * Sets LED based on current state
  */
-void update_led() {
-    led_r.write(state & 0x1);
-    led_g.write(state & 0x10);
-    led_b.write(state & 0x100);
+void updated_leds() {
+    led_r.write(!(state & 0b001));
+    led_g.write(!(state & 0b010));
+    led_b.write(!(state & 0b100));
 }
 
 /*
@@ -97,7 +90,13 @@ void update_led() {
 void read_sensors() {
     alt.readAltitude(&altitude);
     root = root->previous;
-    root->value = altitude.altitude();
+
+    if (state == FCState_Setup) {
+        // In setup we are still zeroing altitude so we don't know ground altitude
+        root->value = altitude.altitude();
+    } else {
+        root->value = altitude.altitude() - groundAltitude;
+    }
 }
 
 /*
@@ -111,9 +110,6 @@ void send_heartbeat() {
         int size = builder.GetSize();
 
         rs422.write(buf, size);
-
-        // also just toggle the red LED at this point
-        //led_r = led_r ? 0 : 1;
 
         last_msg_send_us = current_time;
     }
@@ -146,8 +142,6 @@ void read_messages() {
                     }
                     debug_uart.printf("\r\n");
                 }
-                //led_g = !bpIgnited[0];
-                //led_b = !bpIgnited[1];
             }
         }
     }
@@ -155,52 +149,81 @@ void read_messages() {
 
 long ground_accumulated = 0;
 int samples = 0;
-void handle_pre_launch() {
+void handle_setup() {
     ground_accumulated += root->value;
     samples++;
+    if (samples % (GROUND_SAMPLES / 10) == 0) {
+        debug_uart.printf("Completed %d samples\r\n", samples);
+    }
     if (samples >= GROUND_SAMPLES) {
-        printf("State reached: On ground\n");
-        float ground_altitude = ground_accumulated / samples;
-        alt.setOffsetAltitude(-ground_altitude);
-        state = ON_GROUND;
+        debug_uart.printf("State reached: Pad\r\n");
+        groundAltitude = ground_accumulated / samples;
+        state = FCState_Pad;
     }
 }
 
-void handle_on_ground() {
+void handle_pad() {
     if (root->value > LAUNCH_THRESHOLD) {
-        printf("State reached: Launched\n");
-        state = LAUNCHED;
+        debug_uart.printf("State reached: Flight\r\n");
+        state = FCState_Flight;
     }
 }
 
-void handle_launched() {
+void handle_flight() {
     if (root->value > MIN_ALTITUDE) {
-        printf("State reached: Passed min altitude\n");
-        state = PASSED_MIN_ALT;
+        debug_uart.printf("State reached: Armed\r\n");
+        state = FCState_Armed;
     }
 }
 
-void handle_passed_min_alt() {
+us_timestamp_t drogue_ignition_time;
+void handle_armed() {
     // (a[1] - a[0]) + (a[2] - a[1]) + ... + (a[n] - a[n - 1]) = a[n] - a[0]
     // Might not be the best way since it relies on two measurements
     float slope_sum = root->next->value - root->value;
     if (slope_sum < 0) {
-        printf("State reached: Passed apogee\n");
-        // Write drogue
-        state = PASSED_APOGEE;
+        debug_uart.printf("State reached: Drogue Ignition\r\n");
+        // TODO: Turn on drogue chute ignition pin
+        drogue_ignition_time = current_time;
+        state = FCState_DrogueIgnition;
     }
 }
 
-void handle_passed_apogee() {
+void handle_drogue_ignition() {
+    if (current_time >= drogue_ignition_time + BP_ON_TIME_US) {
+        debug_uart.printf("State reached: Drogue coast\r\n");
+        // TODO: Turn off drogue chute ignition pin
+        state = FCState_DrogueCoast;
+    }
+}
+
+us_timestamp_t main_ignition_time;
+void handle_drogue_coast() {
     if (root->value <= MAIN_CHUTE_THRESHOLD && root->previous->value >= MAIN_CHUTE_THRESHOLD) {
-        debug_uart.printf("State reached: Deployed main chute\n");
-        // Write main
-        state = PASSED_MAIN_CHUTE;
+        debug_uart.printf("State reached: Main ignition\r\n");
+        // TODO: Turn on main chute ignition pin
+        main_ignition_time = current_time;
+        state = FCState_MainIgnition;
     }
 }
 
-float descent_elapsed = 0;
-void handle_passed_main_chute() {
+void handle_main_ignition() {
+    if (current_time >= main_ignition_time + BP_ON_TIME_US) {
+        debug_uart.printf("State reached: Main coast\r\n");
+        // TODO: Turn off main chute ignition pin
+        state = FCState_MainCoast;
+    }
+}
+
+void handle_main_coast() {
+    // TODO: Detect landing (same altitude for a while)
+    if (false /* update condition */) {
+        debug_uart.printf("State reached: Landed\r\n");
+        state = FCState_Landed;
+    }
+}
+
+void handle_landed() {
 }
 
 void handle_debug() {
@@ -229,28 +252,37 @@ void loop() {
 
     handle_debug();
 
-    update_led();
+    updated_leds();
 
     read_sensors();
 
     switch (state)  {
-        case PRE_LAUNCH:
-            handle_pre_launch();
+        case FCState_Setup:
+            handle_setup();
             break;
-        case ON_GROUND:
-            handle_on_ground();
+        case FCState_Pad:
+            handle_pad();
             break;
-        case LAUNCHED:
-            handle_launched();
+        case FCState_Flight:
+            handle_flight();
             break;
-        case PASSED_MIN_ALT:
-            handle_passed_min_alt();
+        case FCState_Armed:
+            handle_armed();
             break;
-        case PASSED_APOGEE:
-            handle_passed_apogee();
+        case FCState_DrogueIgnition:
+            handle_drogue_ignition();
             break;
-        case PASSED_MAIN_CHUTE:
-            handle_passed_main_chute();
+        case FCState_DrogueCoast:
+            handle_drogue_coast();
+            break;
+        case FCState_MainIgnition:
+            handle_main_ignition();
+            break;
+        case FCState_MainCoast:
+            handle_main_coast();
+            break;
+        case FCState_Landed:
+            handle_landed();
             break;
     }
 }
@@ -349,11 +381,12 @@ void buildCurrentMessage() {
     Offset<FCUpdateMsg> message =
         CreateFCUpdateMsg(builder,
                           1, // Can't be 0 or it will be ignored
-                          FCState_Pad,
+                          state,
                           // 0.0f, 1.0f, 2.0f,
                           // 3.0f, 4.0f, 5.0f,
                           // 6.0f, 7.0f, 8.0f,
-                          root->value, // 10.0f,
+                          // If in setup, we haven't zeroed altitude yet, so just send 0 instead
+                          state == FCState_Setup ? 0 : root->value, // 10.0f,
                           false, bpIgnited[0], true, bpIgnited[1], false,
                           bpIgnited[2], true, bpIgnited[3], false, bpIgnited[4],
                           true, bpIgnited[5], false, bpIgnited[6]);
@@ -364,11 +397,12 @@ void buildCurrentMessage() {
     message =
         CreateFCUpdateMsg(builder,
                           bytes, // Fill in actual number of bytes
-                          FCState_Pad,
+                          state,
                           // 0.0f, 1.0f, 2.0f,
                           // 3.0f, 4.0f, 5.0f,
                           // 6.0f, 7.0f, 8.0f,
-                          root->value, // 10.0f,
+                          // If in setup, we haven't zeroed altitude yet, so just send 0 instead
+                          state == FCState_Setup ? 0 : root->value, // 10.0f,
                           false, bpIgnited[0], true, bpIgnited[1], false,
                           bpIgnited[2], true, bpIgnited[3], false, bpIgnited[4],
                           true, bpIgnited[5], false, bpIgnited[6]);
