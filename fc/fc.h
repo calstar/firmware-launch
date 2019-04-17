@@ -5,13 +5,24 @@
 #include "mbed.h"
 #include "pins.h"
 
+#include "util.h"
+
 #include "MPL3115A2.h"
+
+// TODO: Turn off BP after certain time?
 
 #define DEBUG_UART_BAUDRATE (115200)
 #define RS422_BAUDRATE (115200)
 #define MSG_SEND_INTERVAL_US (100000u) // 100*1000us = 100ms
 #define NUM_BP (7)
 #define BUF_SIZE (256)
+
+#define METERS(x) (x * 0.3048)
+#define LIST_LENGTH 50
+#define GROUND_SAMPLES 10000
+#define MIN_ALTITUDE 200
+#define MAIN_CHUTE_THRESHOLD 600
+#define LAUNCH_THRESHOLD 10
 
 using namespace flatbuffers;
 using namespace Calstar;
@@ -23,24 +34,48 @@ Timer msgTimer;
 FlatBufferBuilder builder(BUF_SIZE);
 bool bpIgnited[NUM_BP] = {false, false, true, false, false, false, true};
 
-DigitalOut led_red(STATE_LED_RED);
-DigitalOut led_green(STATE_LED_GREEN);
-DigitalOut led_blue(STATE_LED_BLUE);
+DigitalOut led_r(STATE_LED_RED);
+DigitalOut led_g(STATE_LED_GREEN);
+DigitalOut led_b(STATE_LED_BLUE);
 
-UARTSerial rs422(RS422_TX, RS422_RX, RS422_BAUDRATE);
+LaunchState state = PRE_LAUNCH;
+
 Serial debug_uart(DEBUG_TX, DEBUG_RX, DEBUG_UART_BAUDRATE);
-
 I2C mpl_i2c(I2C_SENSOR_SDA, I2C_SENSOR_SCL);
 MPL3115A2 alt(&mpl_i2c, &debug_uart);
-float last_alt = 0;
+Altitude altitude;
+Node* root = nullptr; // Altitude nodes, circular linked list
+Node* last = nullptr;
 
+us_timestamp_t current_time;
 us_timestamp_t last_msg_send_us;
 
 uint8_t rs422_read_buf[BUF_SIZE];
+UARTSerial rs422(RS422_TX, RS422_RX, RS422_BAUDRATE);
 
-void loop() {
-    // Send a message every MSG_SEND_INTERVAL_US microseconds
-    us_timestamp_t current_time = msgTimer.read_high_resolution_us();
+/* 
+ * Sets LED based on current state
+ */
+void update_led() {
+    led_r.write(state & 0x1);
+    led_g.write(state & 0x10);
+    led_b.write(state & 0x100);
+}
+
+/*
+ * Reads data from connected sensors
+ * Currently only altimeter
+ */
+void read_sensors() {
+    alt.readAltitude(&altitude);
+    root = root->previous;
+    root->value = altitude.altitude();
+}
+
+/*
+ * Send a message every MSG_SEND_INTERVAL_US microseconds
+ */
+void send_heartbeat() {
     if (current_time >= last_msg_send_us + MSG_SEND_INTERVAL_US) {
         buildCurrentMessage();
 
@@ -50,11 +85,16 @@ void loop() {
         rs422.write(buf, size);
 
         // also just toggle the red LED at this point
-        led_red = led_red ? 0 : 1;
+        //led_r = led_r ? 0 : 1;
 
         last_msg_send_us = current_time;
     }
-    // Always read messages
+}
+
+/*
+ * Always reads messages from RS422
+ */
+void read_messages() {
     while (rs422.readable()) {
         ssize_t num_read = rs422.read(rs422_read_buf, BUF_SIZE);
         for (int i = 0; i < num_read; i++) {
@@ -78,12 +118,64 @@ void loop() {
                     }
                     debug_uart.printf("\r\n");
                 }
-                led_green = !bpIgnited[0];
-                led_blue = !bpIgnited[1];
+                //led_g = !bpIgnited[0];
+                //led_b = !bpIgnited[1];
             }
         }
     }
+}
 
+long ground_accumulated = 0;
+int samples = 0;
+void handle_pre_launch() {
+    ground_accumulated += root->value;
+    samples++;
+    if (samples >= GROUND_SAMPLES) {
+        printf("State reached: On ground\n");
+        float ground_altitude = ground_accumulated / samples;
+        alt.setOffsetAltitude(-ground_altitude);
+        state = ON_GROUND;
+    }
+}
+
+void handle_on_ground() {
+    if (root->value > LAUNCH_THRESHOLD) {
+        printf("State reached: Launched\n");
+        state = LAUNCHED;
+    }
+}
+
+void handle_launched() {
+    if (root->value > MIN_ALTITUDE) {
+        printf("State reached: Passed min altitude\n");
+        state = PASSED_MIN_ALT;
+    }
+}
+
+void handle_passed_min_alt() {
+    // (a[1] - a[0]) + (a[2] - a[1]) + ... + (a[n] - a[n - 1]) = a[n] - a[0]
+    // Might not be the best way since it relies on two measurements
+    float slope_sum = root->next->value - root->value;
+    if (slope_sum < 0) {
+        printf("State reached: Passed apogee\n");
+        // Write drogue
+        state = PASSED_APOGEE;
+    }
+}
+
+void handle_passed_apogee() {
+    if (root->value <= MAIN_CHUTE_THRESHOLD && root->previous->value >= MAIN_CHUTE_THRESHOLD) {
+        debug_uart.printf("State reached: Deployed main chute\n");
+        // Write main
+        state = PASSED_MAIN_CHUTE;
+    }
+}
+
+float descent_elapsed = 0;
+void handle_passed_main_chute() {
+}
+
+void handle_debug() {
     if (debug_uart.readable()) {
         char c = debug_uart.getc();
 
@@ -98,20 +190,50 @@ void loop() {
             debug_uart.printf("\r\n");
         }
     }
+}
 
-    Altitude alt_result;
-    alt.readAltitude(&alt_result);
-    last_alt = alt_result.altitude(Altitude::FEET);
-    debug_uart.printf("Read altitude: %f ft\r\n", last_alt);
+void loop() {
+    current_time = msgTimer.read_high_resolution_us();
+
+    send_heartbeat();
+
+    read_messages();
+
+    handle_debug();
+
+    update_led();
+
+    read_sensors();
+
+    switch (state)  {
+        case PRE_LAUNCH:
+            handle_pre_launch();
+            break;
+        case ON_GROUND:
+            handle_on_ground();
+            break;
+        case LAUNCHED:
+            handle_launched();
+            break;
+        case PASSED_MIN_ALT:
+            handle_passed_min_alt();
+            break;
+        case PASSED_APOGEE:
+            handle_passed_apogee();
+            break;
+        case PASSED_MAIN_CHUTE:
+            handle_passed_main_chute();
+            break;
+    }
 }
 
 void start() {
-    led_red = 0;
-    led_green = !bpIgnited[0];
-    led_blue = !bpIgnited[1];
     msgTimer.start();
 
     // rs422.set_blocking(true);
+
+    // Initialize altitude list
+    root = Node::createList(LIST_LENGTH);
 
     debug_uart.set_blocking(false);
     debug_uart.printf("---- CalSTAR Flight Computer ----\r\n");
@@ -127,13 +249,6 @@ void start() {
     buildCurrentMessage();
 
     last_msg_send_us = msgTimer.read_high_resolution_us();
-}
-
-int main() {
-    start();
-    while (1) {
-        loop();
-    }
 }
 
 uint8_t uplinkMsgBuffer[BUF_SIZE];
@@ -210,7 +325,7 @@ void buildCurrentMessage() {
                           // 0.0f, 1.0f, 2.0f,
                           // 3.0f, 4.0f, 5.0f,
                           // 6.0f, 7.0f, 8.0f,
-                          last_alt, // 10.0f,
+                          root->value, // 10.0f,
                           false, bpIgnited[0], true, bpIgnited[1], false,
                           bpIgnited[2], true, bpIgnited[3], false, bpIgnited[4],
                           true, bpIgnited[5], false, bpIgnited[6]);
@@ -225,9 +340,16 @@ void buildCurrentMessage() {
                           // 0.0f, 1.0f, 2.0f,
                           // 3.0f, 4.0f, 5.0f,
                           // 6.0f, 7.0f, 8.0f,
-                          last_alt, // 10.0f,
+                          root->value, // 10.0f,
                           false, bpIgnited[0], true, bpIgnited[1], false,
                           bpIgnited[2], true, bpIgnited[3], false, bpIgnited[4],
                           true, bpIgnited[5], false, bpIgnited[6]);
     builder.Finish(message);
+}
+
+int main() {
+    start();
+    while (1) {
+        loop();
+    }
 }
