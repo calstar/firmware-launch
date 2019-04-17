@@ -127,6 +127,10 @@ void start() {
     frame_id = 0;
 
     t_last_resend = t.read_ms();
+
+    // Input button set to internal pull-up
+    // It is now active low
+    io1.mode(PullUp);
 }
 
 void loop() {
@@ -142,49 +146,60 @@ void loop() {
     }
 
     if (pc.readable()) {
-        const char in = pc.getc();
-        if (in == '\n') {
-            if (line == COMMAND_YES_RETRY) {
-                retry = true;
-                #ifndef JSON_LOGGING
-                pc.printf("%s\r\n", line.c_str());
-                #endif
-            } else if (line == COMMAND_NO_RETRY) {
-                retry = false;
-                #ifndef JSON_LOGGING
-                pc.printf("%s\r\n", line.c_str());
-                #endif
-            } else {
-                if (retry) {
+        if (!io1) {
+            // Button is active-low
+            // We want to transmit nothing unless the button pressed
+            const char in = pc.getc();
+            if (in == '\n') {
+                if (line == COMMAND_YES_RETRY) {
+                    retry = true;
                     #ifndef JSON_LOGGING
-                    pc.printf("![SENDING WITH RETRY '%s', "
-                              "bytes: %d]!\r\n",
-                              line.c_str(), line.length());
+                    pc.printf("%s\r\n", line.c_str());
                     #endif
-                    line += '\n';
-                    tx_led = 1;
-                    sendUplinkMsg(line, true);
-                    t_tx_led_on = t.read_ms();
+                } else if (line == COMMAND_NO_RETRY) {
+                    retry = false;
                     #ifndef JSON_LOGGING
-                    pc.printf("\r\nOut of send up link "
-                              "message true\r\n");
+                    pc.printf("%s\r\n", line.c_str());
                     #endif
                 } else {
-                    #ifndef JSON_LOGGING
-                    pc.printf("![SENDING ONCE ' %s ', "
-                              "bytes: %d]!\r\n",
-                              line.c_str(), line.length());
-                    #endif
-                    line += '\n';
-                    tx_led = 1;
-                    pc.putc('b');
-                    sendUplinkMsg(line, false);
-                    t_tx_led_on = t.read_ms();
+                    if (retry) {
+                        #ifndef JSON_LOGGING
+                        pc.printf("![SENDING WITH RETRY '%s', "
+                                "bytes: %d]!\r\n",
+                                line.c_str(), line.length());
+                        #endif
+                        line += '\n';
+                        tx_led = 1;
+                        sendUplinkMsg(line, true);
+                        t_tx_led_on = t.read_ms();
+                        #ifndef JSON_LOGGING
+                        pc.printf("\r\nOut of send up link "
+                                "message true\r\n");
+                        #endif
+                    } else {
+                        #ifndef JSON_LOGGING
+                        pc.printf("![SENDING ONCE ' %s ', "
+                                "bytes: %d]!\r\n",
+                                line.c_str(), line.length());
+                        #endif
+                        line += '\n';
+                        tx_led = 1;
+                        pc.putc('b');
+                        sendUplinkMsg(line, false);
+                        t_tx_led_on = t.read_ms();
+                    }
                 }
+                line = "";
+            } else {
+                line += in;
             }
-            line = "";
         } else {
-            line += in;
+            if (pc.getc() == '\n') {
+                #ifndef JSON_LOGGING
+                pc.printf("![TRANSMIT LOCKED]!\r\n");
+                #endif
+                pc.printf("{ \"message\": \"transmit_locked\" }\r\n");
+            }
         }
     }
 
