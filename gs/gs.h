@@ -81,6 +81,8 @@ int32_t t_last_resend;
 
 uint8_t frame_id;
 
+uint32_t total_bytes_sent;
+
 // frame_id, <buffer size, buffer, number of retries>
 std::unordered_map<uint8_t, std::pair<std::vector<uint8_t>, uint8_t>> acks_remaining;
 
@@ -94,10 +96,12 @@ const DownlinkMsg *getDownlinkMsgChar(char c);
 const DownlinkMsg *getDownlinkMsg(uint8_t *data, int32_t data_len);
 void resend_msgs();
 void sendAck(uint8_t frame_id);
+void radioTx(const uint8_t *const data, const int32_t data_len);
 
 void sendJsonInt(uint64_t timestamp, const std::string &id, int value);
 void sendJsonFloat(uint64_t timestamp, const std::string &id, float value);
 void sendJsonString(uint64_t timestamp, const std::string &id, const std::string &value);
+void sendJsonLog(const std::string &value);
 
 int main() {
     start();
@@ -112,7 +116,9 @@ void start() {
     tx_led = 0;
 
     radio.reset();
+    #ifndef JSON_LOGGING
     pc.printf("![Radio reset complete.]!\r\n");
+    #endif
 
     radio.init();
     radio.setAESEncryption(ENCRYPT_KEY, strlen(ENCRYPT_KEY));
@@ -131,6 +137,8 @@ void start() {
     // Input button set to internal pull-up
     // It is now active low
     io1.mode(PullUp);
+
+    total_bytes_sent = 0;
 }
 
 void loop() {
@@ -198,7 +206,7 @@ void loop() {
                 #ifndef JSON_LOGGING
                 pc.printf("![TRANSMIT LOCKED]!\r\n");
                 #endif
-                pc.printf("{ \"message\": \"transmit_locked\" }\r\n");
+                sendJsonLog("Failed to send frame: Transmit locked.");
             }
         }
     }
@@ -351,7 +359,7 @@ bool sendUplinkMsg(const std::string &str, bool with_ack) {
     if (with_ack) {
         acks_remaining.insert({frame_id, {std::vector<uint8_t>(buf, buf + size), 0}});
     }
-    radio.send(buf, size);
+    radioTx(buf, size);
 
     ++frame_id;
 }
@@ -431,12 +439,13 @@ void resend_msgs() {
         pc.printf("![RESENDING FRAME '%d']!\r\n", (int)msg.first);
         #endif
         const std::vector<uint8_t> &vec = std::get<0>(msg.second);
-        radio.send(vec.data(), vec.size());
+        radioTx(vec.data(), vec.size());
         std::get<1>(msg.second) = std::get<1>(msg.second) + 1;
         if (std::get<1>(msg.second) >= MAX_NUM_RETRIES) {
             #ifndef JSON_LOGGING
             pc.printf("![FAILED TO SEND FRAME '%d']!\r\n", msg.first);
             #endif
+            sendJsonLog("Failed to send frame: Exceeded max number of retries.");
             acks_remaining.erase(msg.first);
         }
     }
@@ -453,7 +462,7 @@ void sendAck(uint8_t frame_id) {
     builder.Reset();
     ack = CreateUplinkMsg(builder, bytes, UplinkType_Ack, 0, frame_id, false);
     builder.Finish(ack);
-    radio.send(builder.GetBufferPointer(), builder.GetSize());
+    radioTx(builder.GetBufferPointer(), builder.GetSize());
 }
 
 
@@ -470,4 +479,16 @@ void sendJsonFloat(uint64_t timestamp, const std::string &id, float value) {
 void sendJsonString(uint64_t timestamp, const std::string &id, const std::string &value) {
     pc.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": \"%s\"}\r\n", 
         timestamp, id.c_str(), value.c_str());
+}
+
+void sendJsonLog(const std::string &value) {
+    pc.printf("{\"timestamp\": -1, \"id\": \"%s\", \"value\": \"%s\"}\r\n",
+        GS_LOG, value.c_str());
+}
+
+void radioTx(const uint8_t *const data, const int32_t data_len) {
+    radio.send(data, data_len);
+    total_bytes_sent += data_len;
+    pc.printf("{ \"timestamp\": -1, \"id\": \"%s\", \"value\": %d}\r\n",
+            COMMS_SENT, total_bytes_sent);
 }

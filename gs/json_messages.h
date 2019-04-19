@@ -15,5 +15,6 @@
 #define GS_RSSI         "gs.rssi"
 #define TPC_BATV        "tpc.bat_v"
 #define TPC_STATE       "tpc.state"
+#define GS_LOG          "gs.log"
 
 #endif
