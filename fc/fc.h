@@ -400,11 +400,11 @@ void buildCurrentMessage() {
     builder.Reset();
     message = CreateFCUpdateMsg(builder,
         bytes, // Fill in actual number of bytes
-        FCState_Pad,
+        state,
         // 0.0f, 1.0f, 2.0f,
         // 3.0f, 4.0f, 5.0f,
         // 6.0f, 7.0f, 8.0f,
-        0.0f, //10.0f,
+        state == FCState_Setup ? 0 : root->value, //10.0f,
         false, bpIgnited[0],
         true, bpIgnited[1],
         false, bpIgnited[2],
@@ -420,11 +420,11 @@ void sendAck(uint8_t frame_id) {
     builder.Reset();
     Offset<FCUpdateMsg> message = CreateFCUpdateMsg(builder,
         1, // Can't be 0 or it will be ignored
-        FCState_Pad,
+        state,
         // 0.0f, 1.0f, 2.0f,
         // 3.0f, 4.0f, 5.0f,
         // 6.0f, 7.0f, 8.0f,
-        0.0f, //10.0f,
+        state == FCState_Setup ? 0 : root->value, //10.0f,
         false, bpIgnited[0],
         true, bpIgnited[1],
         false, bpIgnited[2],
@@ -439,7 +439,7 @@ void sendAck(uint8_t frame_id) {
     builder.Reset();
     Offset<FCUpdateMsg> ack = CreateFCUpdateMsg(builder,
         bytes, // Fill in actual number of bytes
-        FCState_Pad,
+        state,
         // 0.0f, 1.0f, 2.0f,
         // 3.0f, 4.0f, 5.0f,
         // 6.0f, 7.0f, 8.0f,
