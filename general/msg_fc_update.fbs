@@ -1,9 +1,18 @@
 namespace Calstar;
 
 /* This is sent over radio as well so it should be kept small */
-
-enum FCState : byte { Pad = 0, Flight = 1 /* add others to match the state machine in the FC firmware */ }
 enum FCUpdateType : byte { StateUpdate = 0, Ack = 1 }
+enum FCState : byte {
+    Setup           = 0,
+    Pad             = 1,
+    Flight          = 2,
+    Armed           = 3,
+    DrogueIgnition  = 4,
+    DrogueCoast     = 5,
+    MainIgnition    = 6,
+    MainCoast       = 7,
+    Landed          = 8
+}
 table FCUpdateMsg {
     Bytes : uint8;
     State : FCState;
