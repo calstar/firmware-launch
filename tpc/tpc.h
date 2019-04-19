@@ -142,17 +142,18 @@ void loop() {
         ssize_t num_read = rs422.read(rs422_read_buf, BUF_SIZE);
         for (int i = 0; i < num_read; i++) {
             const FCUpdateMsg *msg = getFCUpdateMsg(rs422_read_buf[i]);
-            if (msg->Type() == FCUpdateType_StateUpdate) {
-                fcLatestData = msg;
-                debug_uart.printf("Read alt=%f ft\r\n", fcLatestData->Altitude());
-            }
-            //msg->Type() == FCUpdateType_Ack
-            else {
-                if (acks_remaining.count(msg->FrameID()) == 1) {
-                    acks_remaining.erase(msg->FrameID());
-                    debug_uart.printf("Received Ack for Message: %d\r\n", msg->FrameID());
+            if(msg){
+                if (msg->Type() == FCUpdateType_StateUpdate) {
+                    fcLatestData = msg;
+                    debug_uart.printf("Read alt=%f ft\r\n", fcLatestData->Altitude());
                 }
-
+                //msg->Type() == FCUpdateType_Ack
+                else {
+                    if (acks_remaining.count(msg->FrameID()) == 1) {
+                        acks_remaining.erase(msg->FrameID());
+                        debug_uart.printf("Received Ack for Message: %d\r\n", msg->FrameID());
+                    }
+                }
             }
         }
     }
