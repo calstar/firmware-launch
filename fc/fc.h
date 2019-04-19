@@ -72,6 +72,7 @@ us_timestamp_t last_msg_send_us;
 
 uint8_t rs422_read_buf[BUF_SIZE];
 UARTSerial rs422(RS422_TX, RS422_RX, RS422_BAUDRATE);
+void sendAck(uint8_t frame_id);
 
 
 /*
@@ -436,7 +437,7 @@ void sendAck(uint8_t frame_id) {
 
     const uint8_t bytes = (uint8_t)builder.GetSize();
     builder.Reset();
-    ack = CreateFCUpdateMsg(builder,
+    Offset<FCUpdateMsg> ack = CreateFCUpdateMsg(builder,
         bytes, // Fill in actual number of bytes
         FCState_Pad,
         // 0.0f, 1.0f, 2.0f,
