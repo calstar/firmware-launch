@@ -33,8 +33,10 @@ using namespace Calstar;
 const UplinkMsg *getUplinkMsg(char c);
 const FCUpdateMsg *getFCUpdateMsg(char c);
 void buildCurrentMessage();
-
+void resend_msgs();
 void sendAck(uint8_t frame_id);
+
+void sendUplinkMsgToFC(uint8_t numBytes, bool with_ack, uint8_t frame_id);
 
 Timer msgTimer;
 FlatBufferBuilder builder(BUF_SIZE);
@@ -63,6 +65,7 @@ uint8_t remaining_send_buf[BUF_SIZE];
 int remaining_send_size = 0;
 int remaining_send_buf_start = 0;
 us_timestamp_t last_radio_send_us;
+int32_t t_last_resend;
 
 // frame_id, <message buffer, number of retries>
 std::unordered_map<uint8_t, std::pair<std::vector<uint8_t>, uint8_t>>
@@ -220,7 +223,7 @@ void loop() {
                         }
                     }
                     debug_uart.printf(")to FC.\r\n");
-                    sendUplinkMsgToFC(msg->Bytes(), msg->AckReqd());
+                    sendUplinkMsgToFC(msg->Bytes(), msg->AckReqd(), msg->FrameID());
                 }
                 if (msg->AckReqd()) {
                     sendAck(msg->FrameID());
@@ -442,7 +445,7 @@ void sendAck(uint8_t frame_id) {
     radio.send(builder.GetBufferPointer(), builder.GetSize());
 }
 
-void sendUplinkMsgToFC(uint8_t numBytes, bool with_ack){
+void sendUplinkMsgToFC(uint8_t numBytes, bool with_ack, uint8_t frame_id){
     if (with_ack) {
         acks_remaining.insert(
             {frame_id, {std::vector<uint8_t>(uplinkMsgBuffer, uplinkMsgBuffer + numBytes), 0}});
