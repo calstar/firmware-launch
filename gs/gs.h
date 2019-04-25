@@ -61,8 +61,10 @@ using namespace Calstar;
 /****************Global Variables***************/
 DigitalOut rx_led(LED_RX);
 DigitalOut tx_led(LED_TX);
+DigitalOut tx_lock(IO2); // using for tx lock led
+
 DigitalIn io1(IO1);
-DigitalIn io2(IO2);
+// DigitalIn io2(IO2);
 DigitalIn io3(IO3);
 DigitalIn io4(IO4);
 Timer t;
@@ -114,6 +116,7 @@ int main() {
 void start() {
     rx_led = 0;
     tx_led = 0;
+    tx_lock = 0;
 
     radio.reset();
     #ifndef JSON_LOGGING
@@ -151,6 +154,11 @@ void loop() {
     }
     if (rx_led.read() == 1 && t.read_ms() - t_rx_led_on > LED_ON_TIME_MS) {
         rx_led = 0;
+    }
+    if (io1) {
+        tx_lock = 1;
+    } else {
+        tx_lock = 0;
     }
 
     if (pc.readable()) {
