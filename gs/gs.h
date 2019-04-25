@@ -31,12 +31,19 @@
 #include "msg_fc_update_generated.h"
 #include "msg_uplink_generated.h"
 
+using namespace flatbuffers;
 using namespace Calstar;
 
 #include <inttypes.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+struct TelecmdMsg {
+    std::vector<uint8_t> buf;
+    uint8_t frame_id;
+    uint8_t num_retries;
+};
 
 /* Defines */
 
@@ -49,6 +56,12 @@ using namespace Calstar;
 #define RX_BUF_LEN (256)
 
 #define ACK_RESEND_INTERVAL_MS (200)
+#define MAX_NUM_RETRIES (50)
+
+#define COMMAND_YES_RETRY ("![YES_RETRY]!")
+#define COMMAND_NO_RETRY ("![NO_RETRY]!")
+
+#define FLATBUF_BUF_SIZE (256)
 
 /* Function Declarations */
 void init_leds();
@@ -60,11 +73,14 @@ void update_inputs();
 
 void resend_missing_acks();
 
-void execute_command(const std::string &cmd);
+bool execute_command(const std::string &cmd);
+bool parse_to_telecmd_msg(const std::string &line, uint8_t frame_id, bool ack_req, std::vector<uint8_t> *const out);
 
-const DownlinkMsg *parse_rx_buf(uint8_t *buf, size_t buf_size);
+void radio_transmit(const uint8_t *const buf, const int32_t size);
+
+const DownlinkMsg *parse_to_downlink(uint8_t *buf, size_t buf_size);
 void handle_incoming_msg(const DownlinkMsg *msg);
-void update_acks(uint8_t frame_id);
+void handle_acks(uint8_t frame_id);
 void send_ack(uint8_t frame_id);
 
 void json_log_to_serial(const DownlinkMsg *msg);
@@ -88,17 +104,15 @@ int32_t t_last_ack_resend;
 
 uint8_t rx_buf[RX_BUF_LEN];
 RFM69 radio(SPI1_MOSI, SPI1_MISO, SPI1_SCLK, SPI1_SSEL, RADIO_RST, true);
+bool radio_retry;
 
 USBSerial serial;
 
 std::string line;
 
-struct TelemetryMsg {
-    std::vector<uint8_t> buf;
-    uint8_t frame_id;
-};
+std::unordered_map<uint8_t, TelecmdMsg> acks_remaining;
 
-std::unordered_map<uint8_t, TelemetryMsg> acks_remaining;
+FlatBufferBuilder builder(FLATBUF_BUF_SIZE);
 
 /* Function Definitions */
 void start() {
@@ -111,6 +125,8 @@ void start() {
     tx_frame_id = 0;
     total_bytes_sent = 0;
     t_last_ack_resend = t.read_ms();
+    radio_retry = true;
+    line = "";
 }
 
 void loop() {
@@ -125,7 +141,10 @@ void loop() {
     if (serial.readable()) {
         const char c = serial.getc();
         if (c == '\n') {
-            execute_command(line);
+            if (!execute_command(line)) {
+                // log that execute failed
+            }
+            line = "";
         } else {
             line += c;
         }
@@ -138,7 +157,7 @@ void loop() {
         rx_led = 1;
         t_rx_led_on = t.read_ms();
 
-        const DownlinkMsg *msg = parse_rx_buf(rx_buf + 1, sizeof(rx_buf) - 1);
+        const DownlinkMsg *msg = parse_to_downlink(rx_buf + 1, sizeof(rx_buf) - 1);
         if (msg != nullptr) {
             handle_incoming_msg(msg);
         }
@@ -186,14 +205,97 @@ void update_inputs() {
 }
 
 void resend_missing_acks() {
-
+    for (auto &kv : acks_remaining) {
+        TelecmdMsg &msg = kv.second;
+        radio_transmit(msg.buf.data(), msg.buf.size());
+        ++msg.num_retries;
+        if (msg.num_retries >= MAX_NUM_RETRIES) {
+            acks_remaining.erase(msg.frame_id);
+            // log that failed to send.
+        }
+    }
 }
 
-void execute_command(const std::string &cmd) {
+bool execute_command(const std::string &cmd) {
+    if (line == COMMAND_YES_RETRY) {
+        radio_retry = true;
+        // log that retry is set
+    } else if (line == COMMAND_NO_RETRY) {
+        radio_retry = false;
+        // log that retry is unset
+    } else if (!tx_lock_button) {
+        line += '\n';
 
+        TelecmdMsg msg;
+        msg.frame_id = tx_frame_id;
+        msg.num_retries = 0;
+        if (!parse_to_telecmd_msg(cmd, msg.frame_id, radio_retry, &msg.buf)) {
+            return false;
+        }
+        ++tx_frame_id;
+
+        if (radio_retry) {
+            acks_remaining.insert({msg.frame_id, msg});
+        }
+        radio_transmit(msg.buf.data(), msg.buf.size());
+    }
+    return true;
 }
 
-const DownlinkMsg *parse_rx_buf(uint8_t *buf, size_t buf_size) {
+bool parse_to_telecmd_msg(const std::string &line, uint8_t frame_id, bool ack_req, std::vector<uint8_t> *const out) {
+    UplinkType type = UplinkType_FCOff;
+    uint8_t bps[7] = {0, 0, 0, 0, 0, 0, 0};
+
+    if (line[0] == 'n') {
+        type = UplinkType_FCOn;
+    } else if (line[0] == 'o') {
+        type = UplinkType_FCOff;
+    } else if (line[0] == 'b') {
+        type = UplinkType_BlackPowderPulse;
+        if (line.length() >= 8) {
+            for (int32_t i = 1; i < 8; ++i) {
+                if (line[i] == '1') {
+                    bps[i - 1] = 1;
+                } else if (line[i] == '0') {
+                    bps[i - 1] = 0;
+                } else {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    builder.Reset();
+    auto bps_offset = builder.CreateVector(bps, sizeof(bps));
+    Offset<UplinkMsg> msg = CreateUplinkMsg(builder, 1, type, bps_offset, frame_id, ack_req);
+    builder.Finish(msg);
+
+    const uint8_t bytes = (uint8_t)builder.GetSize();
+    builder.Reset();
+    bps_offset = builder.CreateVector(bps, sizeof(bps));
+    msg = CreateUplinkMsg(builder, bytes, type, bps_offset, frame_id, ack_req);
+    builder.Finish(msg);
+
+    const uint8_t *const buf = builder.GetBufferPointer();
+    const int32_t size = builder.GetSize();
+
+    *out = std::vector<uint8_t>(buf, buf + size);
+
+    return true;
+}
+
+void radio_transmit(const uint8_t *const buf, const int32_t size) {
+    tx_led = 1;
+    radio.send(buf, size);
+    t_tx_led_on = t.read_ms();
+    total_bytes_sent += size;
+}
+
+const DownlinkMsg *parse_to_downlink(uint8_t *buf, size_t buf_size) {
     return nullptr;
 }
 
@@ -204,7 +306,7 @@ void handle_incoming_msg(const DownlinkMsg *msg) {
 
     switch (msg->Type()) {
         case DownlinkType_Ack:
-            update_acks(msg->FrameID());
+            handle_acks(msg->FrameID());
             break;
         case DownlinkType_StateUpdate:
             json_log_to_serial(msg);
@@ -215,10 +317,17 @@ void handle_incoming_msg(const DownlinkMsg *msg) {
 }
 
 void send_ack(uint8_t frame_id) {
-
+    builder.Reset();
+    Offset<UplinkMsg> ack = CreateUplinkMsg(builder, 1, UplinkType_Ack, 0, frame_id, false);
+    builder.Finish(ack);
+    const uint8_t bytes = builder.GetSize();
+    builder.Reset();
+    ack = CreateUplinkMsg(builder, bytes, UplinkType_Ack, 0, frame_id, false);
+    builder.Finish(ack);
+    radio_transmit(builder.GetBufferPointer(), builder.GetSize());
 }
 
-void update_acks(uint8_t frame_id) {
+void handle_acks(uint8_t frame_id) {
     if (acks_remaining.count(frame_id) >= 1) {
         acks_remaining.erase(frame_id);
     }
