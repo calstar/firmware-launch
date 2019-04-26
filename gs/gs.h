@@ -26,7 +26,7 @@
 #include "mbed.h"
 #include "USBSerial.h"
 #include "RFM69/RFM69.hpp"
-
+#include "json_messages.h"
 #include "msg_downlink_generated.h"
 #include "msg_fc_update_generated.h"
 #include "msg_uplink_generated.h"
@@ -55,6 +55,8 @@ struct TelecmdMsg {
 
 #define RX_BUF_LEN (256)
 
+#define JSON_LOG_UPDATE_INTERVAL_MS (200)
+
 #define ACK_RESEND_INTERVAL_MS (200)
 #define MAX_NUM_RETRIES (50)
 
@@ -63,6 +65,8 @@ struct TelecmdMsg {
 
 #define FLATBUF_BUF_SIZE (256)
 
+#define BATUINT_TO_FLOAT(a) (((float)(a)) / 3308.4751259079328064817304607171f)
+
 /* Function Declarations */
 void init_leds();
 void init_radio();
@@ -70,6 +74,8 @@ void init_inputs();
 
 void update_leds();
 void update_inputs();
+
+void periodic_json_log_update();
 
 void resend_missing_acks();
 
@@ -88,6 +94,11 @@ void send_ack(const uint8_t frame_id);
 
 void json_log_to_serial(const DownlinkMsg *const msg);
 
+void sendJsonInt(uint64_t timestamp, const std::string &id, int value);
+void sendJsonFloat(uint64_t timestamp, const std::string &id, float value);
+void sendJsonString(uint64_t timestamp, const std::string &id, const std::string &value);
+void sendJsonLog(const std::string &value);
+
 /* Global Variables */
 Timer t;
 
@@ -104,6 +115,7 @@ uint32_t total_bytes_sent;
 uint8_t tx_frame_id;
 
 int32_t t_last_ack_resend;
+int32_t t_last_periodic_log;
 
 uint8_t rx_buf[RX_BUF_LEN];
 RFM69 radio(SPI1_MOSI, SPI1_MISO, SPI1_SCLK, SPI1_SSEL, RADIO_RST, true);
@@ -129,13 +141,20 @@ void start() {
     tx_frame_id = 0;
     total_bytes_sent = 0;
     t_last_ack_resend = t.read_ms();
+    t_last_periodic_log = t.read_ms();
     radio_retry = true;
     line = "";
+    sendJsonLog("Start: Initialization complete.");
 }
 
 void loop() {
     update_leds();
     update_inputs();
+
+    if (t.read_ms() - t_last_periodic_log > JSON_LOG_UPDATE_INTERVAL_MS) {
+        periodic_json_log_update();
+        t_last_periodic_log = t.read_ms();
+    }
 
     if (t.read_ms() - t_last_ack_resend > ACK_RESEND_INTERVAL_MS) {
         resend_missing_acks();
@@ -173,9 +192,10 @@ void init_leds() {
     tx_led = 0;
     tx_lock_led = 0;
 
-    int32_t t0 = t.read_ms();
-    t_tx_led_on = t0;
-    t_rx_led_on = t0;
+    t_tx_led_on = t.read_ms();
+    t_rx_led_on = t.read_ms();
+
+    sendJsonLog("Leds: Turned off.");
 }
 
 void init_radio() {
@@ -184,11 +204,13 @@ void init_radio() {
     radio.setAESEncryption(ENCRYPT_KEY, strlen(ENCRYPT_KEY));
     radio.setHighPowerSettings(true);
     radio.setPowerDBm(20);
+    sendJsonLog("Radio: Initialized.");
 }
 
 void init_inputs() {
     // Set to active-low using internal pull-up
     tx_lock_button.mode(PullUp);
+    sendJsonLog("Tx Lock Button: Pulled up");
 }
 
 void update_leds() {
@@ -208,6 +230,10 @@ void update_inputs() {
     }
 }
 
+void periodic_json_log_update() {
+    sendJsonInt(-1, COMMS_SENT, total_bytes_sent);
+}
+
 void resend_missing_acks() {
     for (auto &kv : acks_remaining) {
         TelecmdMsg &msg = kv.second;
@@ -215,7 +241,8 @@ void resend_missing_acks() {
         ++msg.num_retries;
         if (msg.num_retries >= MAX_NUM_RETRIES) {
             acks_remaining.erase(msg.frame_id);
-            // log that failed to send.
+            sendJsonLog("Failed to send frame " + std::to_string(msg.frame_id) 
+                + ": Exceeded max number of retries.");
         }
     }
 }
@@ -223,25 +250,30 @@ void resend_missing_acks() {
 bool execute_command(const std::string &cmd) {
     if (line == COMMAND_YES_RETRY) {
         radio_retry = true;
-        // log that retry is set
+        sendJsonLog("Radio: Set to transmit with retry.");
     } else if (line == COMMAND_NO_RETRY) {
         radio_retry = false;
-        // log that retry is unset
-    } else if (!tx_lock_button) {
-        line += '\n';
+        sendJsonLog("Radio: Set to transmit without retry.");
+    } else  {
+        if (!tx_lock_button) {
+            line += '\n';
 
-        TelecmdMsg msg;
-        msg.frame_id = tx_frame_id;
-        msg.num_retries = 0;
-        if (!parse_to_telecmd_msg(cmd, msg.frame_id, radio_retry, &msg.buf)) {
-            return false;
-        }
-        ++tx_frame_id;
+            TelecmdMsg msg;
+            msg.frame_id = tx_frame_id;
+            msg.num_retries = 0;
+            if (!parse_to_telecmd_msg(cmd, msg.frame_id, radio_retry, &msg.buf)) {
+                sendJsonLog("Failed to send frame: unable to parse input.");
+                return false;
+            }
+            ++tx_frame_id;
 
-        if (radio_retry) {
-            acks_remaining.insert({msg.frame_id, msg});
+            if (radio_retry) {
+                acks_remaining.insert({msg.frame_id, msg});
+            }
+            radio_transmit(msg.buf.data(), msg.buf.size());
+        } else {
+            sendJsonLog("Failed to send frame: Transmit locked.");
         }
-        radio_transmit(msg.buf.data(), msg.buf.size());
     }
     return true;
 }
@@ -388,7 +420,34 @@ void handle_acks(const uint8_t frame_id) {
 }
 
 void json_log_to_serial(const DownlinkMsg *const msg) {
+    const uint64_t tstamp = msg->TimeStamp();
+    sendJsonInt(   tstamp,  COMMS_RECD,  msg->Bytes());
+    sendJsonInt(   tstamp,  TPC_STATE,   (int)msg->State());
+    sendJsonInt(   tstamp,  FC_PWRD,     (int)msg->FCPowered());
+    sendJsonString(tstamp,  TPC_GPS,     msg->GPSString()->c_str());
+    sendJsonFloat( tstamp,  TPC_BATV,    BATUINT_TO_FLOAT(msg->BattVoltage()));
 
+    if (msg->FCMsg()) {
+        const FCUpdateMsg *const fc = msg->FCMsg();
+        sendJsonInt(  tstamp,  FC_STATE, (int)fc->State());
+        sendJsonFloat(tstamp,  FC_ALT,   fc->Altitude());
+    }
+}
+
+void sendJsonInt(uint64_t timestamp, const std::string &id, int value) {
+    serial.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": %d}\r\n", timestamp, id.c_str(), value);
+}
+
+void sendJsonFloat(uint64_t timestamp, const std::string &id, float value) {
+    serial.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": %f}\r\n", timestamp, id.c_str(), value);
+}
+
+void sendJsonString(uint64_t timestamp, const std::string &id, const std::string &value) {
+    serial.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": \"%s\"}\r\n", timestamp, id.c_str(), value.c_str());
+}
+
+void sendJsonLog(const std::string &value) {
+    serial.printf("{\"timestamp\": -1, \"id\": \"%s\", \"value\": \"%s\"}\r\n", GS_LOG, value.c_str());
 }
 
 int main() {
