@@ -165,7 +165,7 @@ void loop() {
         const char c = serial.getc();
         if (c == '\n') {
             if (!execute_command(line)) {
-                // log that execute failed
+                sendJsonLog("Failed to execute command.");
             }
             line = "";
         } else {
