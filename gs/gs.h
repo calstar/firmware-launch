@@ -180,7 +180,7 @@ void loop() {
         rx_led = 1;
         t_rx_led_on = t.read_ms();
 
-        const DownlinkMsg *msg = stream_parse_to_downlink(rx_buf + 1, sizeof(rx_buf) - 1);
+        const DownlinkMsg *msg = stream_parse_to_downlink(rx_buf + 1, num_bytes_rxd - 1);
         if (msg != nullptr) {
             handle_incoming_msg(msg);
         }
@@ -231,7 +231,7 @@ void update_inputs() {
 }
 
 void periodic_json_log_update() {
-    sendJsonInt(-1, COMMS_SENT, total_bytes_sent);
+    serial.printf("{ \"timestamp\": -1, \"id\": \"%s\", \"value\": %d}\r\n", COMMS_SENT, total_bytes_sent);
 }
 
 void resend_missing_acks() {
@@ -358,11 +358,14 @@ void push_to_stream(const uint8_t b, uint8_t *const buf, size_t *const buf_size)
 }
 
 const DownlinkMsg *parse_to_downlink(uint8_t *const buf, size_t *const buf_size) {
+    // Check if some contiguous sub-sequence from the beginning is a valid 
+    //     (potentially partial) DownlinkMsg
     Verifier verifier(buf, *buf_size);
     if (VerifyDownlinkMsgBuffer(verifier)) {
-        const DownlinkMsg *const msg = GetDownlinkMsg(buf);
+        const DownlinkMsg *msg = GetDownlinkMsg(buf);
         const uint8_t expected_num_bytes = msg->Bytes();
 
+        // Now use how big the message was expected to be to reverify
         uint8_t actual_size = *buf_size;
         if (*buf_size < expected_num_bytes) {
             return nullptr;
@@ -375,9 +378,11 @@ const DownlinkMsg *parse_to_downlink(uint8_t *const buf, size_t *const buf_size)
             }
         }
 
+        // Copy valid message to an output buffer and remove relevant bytes from the stream buffer
         memcpy(out_buf, buf, actual_size);
         memmove(buf, buf + actual_size, FLATBUF_BUF_SIZE - actual_size);
         *buf_size -= actual_size;
+        // Clear so that no false positives
         memset(buf + *buf_size, 0, FLATBUF_BUF_SIZE - *buf_size);
 
         return GetDownlinkMsg(out_buf);
@@ -421,6 +426,7 @@ void handle_acks(const uint8_t frame_id) {
 
 void json_log_to_serial(const DownlinkMsg *const msg) {
     const uint64_t tstamp = msg->TimeStamp();
+    sendJsonInt(   tstamp,   GS_RSSI,     radio.getRSSI());
     sendJsonInt(   tstamp,  COMMS_RECD,  msg->Bytes());
     sendJsonInt(   tstamp,  TPC_STATE,   (int)msg->State());
     sendJsonInt(   tstamp,  FC_PWRD,     (int)msg->FCPowered());
@@ -428,7 +434,7 @@ void json_log_to_serial(const DownlinkMsg *const msg) {
     sendJsonFloat( tstamp,  TPC_BATV,    BATUINT_TO_FLOAT(msg->BattVoltage()));
 
     if (msg->FCMsg()) {
-        const FCUpdateMsg *const fc = msg->FCMsg();
+        const FCUpdateMsg *fc = msg->FCMsg();
         sendJsonInt(  tstamp,  FC_STATE, (int)fc->State());
         sendJsonFloat(tstamp,  FC_ALT,   fc->Altitude());
     }
