@@ -1,6 +1,6 @@
 build_target = NUCLEO_F401RE
 build_toolchain = GCC_ARM
-build_dir = BUILD
+build_dir = BUILD/$(board)
 project_name = firmware-launch
 
 outdir = out/
@@ -20,8 +20,8 @@ ifndef board
 endif
 
 build: validate msg_downlink_generated.h msg_uplink_generated.h msg_fc_update_generated.h
-	time mbed compile --target $(build_target) --toolchain $(build_toolchain) -D$(board) \
-	&& mkdir -p $(outdir) && cp $(build_dir)/$(build_target)/$(build_toolchain)/$(project_name).bin $(outpath) \
+	time mbed compile --target $(build_target) --toolchain $(build_toolchain) -D$(board) --build $(build_dir) \
+	&& mkdir -p $(outdir) && cp $(build_dir)/$(project_name).bin $(outpath) \
 	&& echo "Copied output to $(outpath)"
 
 flash: validate
