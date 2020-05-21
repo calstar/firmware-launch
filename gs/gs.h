@@ -19,450 +19,395 @@
  *  - IO 4 (PB7)
  */
 
-/***************Includes**********************/
+/* Includes */
+
+#include "pins.h"
+
+#include "mbed.h"
+#include "USBSerial.h"
+#include "RFM69/RFM69.hpp"
+#include "json_messages.h"
 #include "msg_downlink_generated.h"
 #include "msg_fc_update_generated.h"
 #include "msg_uplink_generated.h"
-#include "json_messages.h"
 
-#include "mbed.h"
-#include "pins.h"
+using namespace flatbuffers;
+using namespace Calstar;
 
-#include "RFM69/RFM69.hpp"
-#include "USBSerial.h"
 #include <inttypes.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-using namespace flatbuffers;
-using namespace Calstar;
+struct TelecmdMsg {
+    std::vector<uint8_t> buf;
+    uint8_t frame_id;
+    uint8_t num_retries;
+};
 
-/****************Defines**********************/
+/* Defines */
+
+// Must be exactly 16 bytes (excluding null-terminator).
+//     Therefore is missing the 'Y' on purpose. 
 #define ENCRYPT_KEY ("CALSTARENCRYPTKE")
-
-#define COMMAND_YES_RETRY ("![YES_RETRY]!")
-#define COMMAND_NO_RETRY ("![NO_RETRY]!")
 
 #define LED_ON_TIME_MS (50)
 
 #define RX_BUF_LEN (256)
-#define FLATBUF_BUF_SIZE (256)
 
-// resend messages for which have not received acks at 200ms intervals
-#define ACK_CHECK_INTERVAL_MS (200)
+#define JSON_LOG_UPDATE_INTERVAL_MS (200)
+
+#define ACK_RESEND_INTERVAL_MS (200)
 #define MAX_NUM_RETRIES (50)
+
+#define COMMAND_YES_RETRY ("![YES_RETRY]!")
+#define COMMAND_NO_RETRY ("![NO_RETRY]!")
+
+#define FLATBUF_BUF_SIZE (256)
 
 #define BATUINT_TO_FLOAT(a) (((float)(a)) / 3308.4751259079328064817304607171f)
 
-// If enabled, turns off other debug printings
-#define JSON_LOGGING
+/* Function Declarations */
+void init_leds();
+void init_radio();
+void init_inputs();
 
-/****************Global Variables***************/
-DigitalOut rx_led(LED_RX);
-DigitalOut tx_led(LED_TX);
-DigitalOut tx_lock(IO2); // using for tx lock led
+void update_leds();
+void update_inputs();
 
-DigitalIn io1(IO1);
-// DigitalIn io2(IO2);
-DigitalIn io3(IO3);
-DigitalIn io4(IO4);
-Timer t;
+void periodic_json_log_update();
 
-USBSerial pc;
+void resend_missing_acks();
 
-uint8_t rx_buf[RX_BUF_LEN];
-RFM69 radio(SPI1_MOSI, SPI1_MISO, SPI1_SCLK, SPI1_SSEL, RADIO_RST, true);
+bool execute_command(const std::string &cmd);
+bool parse_to_telecmd_msg(const std::string &line, const uint8_t frame_id, const bool ack_req, std::vector<uint8_t> *const out);
 
-std::string line = "";
-bool retry = true;
+void radio_transmit(const uint8_t *const buf, const int32_t size);
 
-int32_t t_tx_led_on;
-int32_t t_rx_led_on;
-int32_t t_last_resend;
+const DownlinkMsg *stream_parse_to_downlink(const uint8_t *const buf, const size_t buf_size);
+void push_to_stream(const uint8_t b, uint8_t *const buf, size_t *const buf_size);
+const DownlinkMsg *parse_to_downlink(uint8_t *const buf, size_t *const buf_size);
 
-uint8_t frame_id;
+void handle_incoming_msg(const DownlinkMsg *const msg);
+void handle_acks(const uint8_t frame_id);
+void send_ack(const uint8_t frame_id);
 
-uint32_t total_bytes_sent;
-
-// frame_id, <buffer size, buffer, number of retries>
-std::unordered_map<uint8_t, std::pair<std::vector<uint8_t>, uint8_t>> acks_remaining;
-
-FlatBufferBuilder builder(FLATBUF_BUF_SIZE);
-
-/***************Function Declarations***********/
-void start();
-void loop();
-bool sendUplinkMsg(const std::string &str, bool with_ack);
-const DownlinkMsg *getDownlinkMsgChar(char c);
-const DownlinkMsg *getDownlinkMsg(uint8_t *data, int32_t data_len);
-void resend_msgs();
-void sendAck(uint8_t frame_id);
-void radioTx(const uint8_t *const data, const int32_t data_len);
+void json_log_to_serial(const DownlinkMsg *const msg);
 
 void sendJsonInt(uint64_t timestamp, const std::string &id, int value);
 void sendJsonFloat(uint64_t timestamp, const std::string &id, float value);
 void sendJsonString(uint64_t timestamp, const std::string &id, const std::string &value);
 void sendJsonLog(const std::string &value);
 
-int main() {
-    start();
-    while (true) {
-        loop();
-    }
-    return 0;
-}
+/* Global Variables */
+Timer t;
 
+DigitalOut rx_led(LED_RX);
+DigitalOut tx_led(LED_TX);
+DigitalOut tx_lock_led(IO2);
+int32_t t_tx_led_on;
+int32_t t_rx_led_on;
+
+DigitalIn tx_lock_button(IO1);
+
+uint32_t total_bytes_sent;
+
+uint8_t tx_frame_id;
+
+int32_t t_last_ack_resend;
+int32_t t_last_periodic_log;
+
+uint8_t rx_buf[RX_BUF_LEN];
+RFM69 radio(SPI1_MOSI, SPI1_MISO, SPI1_SCLK, SPI1_SSEL, RADIO_RST, true);
+bool radio_retry;
+
+USBSerial serial;
+
+std::string line;
+
+std::unordered_map<uint8_t, TelecmdMsg> acks_remaining;
+
+FlatBufferBuilder builder(FLATBUF_BUF_SIZE);
+uint8_t out_buf[FLATBUF_BUF_SIZE];
+
+/* Function Definitions */
 void start() {
-    rx_led = 0;
-    tx_led = 0;
-    tx_lock = 0;
-
-    radio.reset();
-    #ifndef JSON_LOGGING
-    pc.printf("![Radio reset complete.]!\r\n");
-    #endif
-
-    radio.init();
-    radio.setAESEncryption(ENCRYPT_KEY, strlen(ENCRYPT_KEY));
-
-    radio.setHighPowerSettings(true);
-    radio.setPowerDBm(20);
-
     t.start();
-    t_tx_led_on = t.read_ms();
-    t_rx_led_on = t.read_ms();
 
-    frame_id = 0;
+    init_leds();
+    init_radio();
+    init_inputs();
 
-    t_last_resend = t.read_ms();
-
-    // Input button set to internal pull-up
-    // It is now active low
-    io1.mode(PullUp);
-
+    tx_frame_id = 0;
     total_bytes_sent = 0;
+    t_last_ack_resend = t.read_ms();
+    t_last_periodic_log = t.read_ms();
+    radio_retry = true;
+    line = "";
+    sendJsonLog("Start: Initialization complete.");
 }
 
 void loop() {
-    if (t.read_ms() - t_last_resend > ACK_CHECK_INTERVAL_MS) {
-        resend_msgs();
-        t_last_resend = t.read_ms();
-    }
-    if (tx_led.read() == 1 && t.read_ms() - t_tx_led_on > LED_ON_TIME_MS) {
-        tx_led = 0;
-    }
-    if (rx_led.read() == 1 && t.read_ms() - t_rx_led_on > LED_ON_TIME_MS) {
-        rx_led = 0;
-    }
-    if (io1) {
-        tx_lock = 1;
-    } else {
-        tx_lock = 0;
+    update_leds();
+    update_inputs();
+
+    if (t.read_ms() - t_last_periodic_log > JSON_LOG_UPDATE_INTERVAL_MS) {
+        periodic_json_log_update();
+        t_last_periodic_log = t.read_ms();
     }
 
-    if (pc.readable()) {
-        if (!io1) {
-            // Button is active-low
-            // We want to transmit nothing unless the button pressed
-            const char in = pc.getc();
-            if (in == '\n') {
-                if (line == COMMAND_YES_RETRY) {
-                    retry = true;
-                    #ifndef JSON_LOGGING
-                    pc.printf("%s\r\n", line.c_str());
-                    #endif
-                } else if (line == COMMAND_NO_RETRY) {
-                    retry = false;
-                    #ifndef JSON_LOGGING
-                    pc.printf("%s\r\n", line.c_str());
-                    #endif
-                } else {
-                    if (retry) {
-                        #ifndef JSON_LOGGING
-                        pc.printf("![SENDING WITH RETRY '%s', "
-                                "bytes: %d]!\r\n",
-                                line.c_str(), line.length());
-                        #endif
-                        line += '\n';
-                        tx_led = 1;
-                        sendUplinkMsg(line, true);
-                        t_tx_led_on = t.read_ms();
-                        #ifndef JSON_LOGGING
-                        pc.printf("\r\nOut of send up link "
-                                "message true\r\n");
-                        #endif
-                    } else {
-                        #ifndef JSON_LOGGING
-                        pc.printf("![SENDING ONCE ' %s ', "
-                                "bytes: %d]!\r\n",
-                                line.c_str(), line.length());
-                        #endif
-                        line += '\n';
-                        tx_led = 1;
-                        pc.putc('b');
-                        sendUplinkMsg(line, false);
-                        t_tx_led_on = t.read_ms();
-                    }
-                }
-                line = "";
-            } else {
-                line += in;
+    if (t.read_ms() - t_last_ack_resend > ACK_RESEND_INTERVAL_MS) {
+        resend_missing_acks();
+        t_last_ack_resend = t.read_ms();
+    }
+
+    if (serial.readable()) {
+        const char c = serial.getc();
+        if (c == '\n') {
+            if (!execute_command(line)) {
+                sendJsonLog("Failed to execute command.");
             }
+            line = "";
         } else {
-            if (pc.getc() == '\n') {
-                #ifndef JSON_LOGGING
-                pc.printf("![TRANSMIT LOCKED]!\r\n");
-                #endif
-                sendJsonLog("Failed to send frame: Transmit locked.");
-            }
+            line += c;
         }
     }
 
     const int32_t num_bytes_rxd = radio.receive((char *)rx_buf, sizeof(rx_buf));
     if (num_bytes_rxd > 1) {
         rx_buf[num_bytes_rxd] = '\0';
+        
         rx_led = 1;
         t_rx_led_on = t.read_ms();
-        bool failed = true;
-        for (int32_t i = 0; i < num_bytes_rxd - 1; ++i) {
-            const DownlinkMsg *msg = getDownlinkMsgChar(rx_buf[i + 1]);
-            if (msg != nullptr) {
-                failed = false;
-                #ifndef JSON_LOGGING
-                pc.printf("![RSSI=%d, bytes: %d]!", radio.getRSSI(), num_bytes_rxd - 1);
-                #endif
 
-                sendJsonInt(msg->TimeStamp(), GS_RSSI, radio.getRSSI());
-                
-                if (msg->Type() == DownlinkType_Ack) {
-                    if (acks_remaining.count(msg->FrameID()) == 1) {
-                        acks_remaining.erase(msg->FrameID());
-                    }
-                    #ifndef JSON_LOGGING
-                    pc.printf("\r\n");
-                    #endif
-                } else if (msg->Type() == DownlinkType_StateUpdate) {
-                    #ifndef JSON_LOGGING
-                    pc.printf(
-                        "tstamp: %" PRIu64 ", bytes: %d, state: %d, fc.pwr: "
-                        "%d, "
-                        "gps string: \"%s\", bat.v: %f",
-                        msg->TimeStamp(), (int)msg->Bytes(), (int)msg->State(),
-                        (int)msg->FCPowered(), msg->GPSString()->str().c_str(),
-                        BATUINT_TO_FLOAT(msg->BattVoltage()));
-                    #endif
-
-
-                    sendJsonInt(msg->TimeStamp(), COMMS_RECD, msg->Bytes());
-                    sendJsonInt(msg->TimeStamp(), TPC_STATE, (int)msg->State());
-                    sendJsonInt(msg->TimeStamp(), FC_PWRD, (int)msg->FCPowered());
-                    sendJsonString(msg->TimeStamp(), TPC_GPS, msg->GPSString()->c_str());
-                    sendJsonFloat(msg->TimeStamp(), TPC_BATV, BATUINT_TO_FLOAT(msg->BattVoltage()));
-
-                    if (msg->FCMsg()) {
-                        const FCUpdateMsg *fc = msg->FCMsg();
-
-                        sendJsonInt(msg->TimeStamp(), FC_STATE, (int)fc->State());
-                        sendJsonFloat(msg->TimeStamp(), FC_ALT, fc->Altitude());
-
-                        #ifndef JSON_LOGGING
-                        pc.printf(", ((state: %d, alt: %f, "
-                                "bps: %d %d, %d %d, %d %d, %d %d, %d %d, %d %d, %d %d))",
-                                (int)fc->State(), fc->Altitude(),
-                                (int)fc->BP1Continuity(), (int)fc->BP1Ignited(),
-                                (int)fc->BP2Continuity(), (int)fc->BP2Ignited(),
-                                (int)fc->BP3Continuity(), (int)fc->BP3Ignited(),
-                                (int)fc->BP4Continuity(), (int)fc->BP4Ignited(),
-                                (int)fc->BP5Continuity(), (int)fc->BP5Ignited(),
-                                (int)fc->BP6Continuity(), (int)fc->BP6Ignited(),
-                                (int)fc->BP7Continuity(), (int)fc->BP7Ignited());
-                        // pc.printf(", ((state: %d, accel: %f, "
-                        //           "%f %f, mag: %f, %f, %f, "
-                        //           "gyro: %f, "
-                        //           "%f, %f, alt: %f, "
-                        //           "pressure: %f, bps: %d %d, "
-                        //           "%d %d, %d %d, %d "
-                        //           "%d, %d %d, %d %d, %d %d))",
-                        //           (int)fc->State(), fc->AccelX(), fc->AccelY(),
-                        //           fc->AccelZ(), fc->MagX(), fc->MagY(),
-                        //           fc->MagZ(), fc->GyroX(), fc->GyroY(),
-                        //           fc->GyroZ(), fc->Altitude(), fc->Pressure(),
-                        //           (int)msg->FCMsg()->BP1Continuity(),
-                        //           (int)msg->FCMsg()->BP1Ignited(),
-                        //           (int)msg->FCMsg()->BP2Continuity(),
-                        //           (int)msg->FCMsg()->BP2Ignited(),
-                        //           (int)msg->FCMsg()->BP3Continuity(),
-                        //           (int)msg->FCMsg()->BP3Ignited(),
-                        //           (int)msg->FCMsg()->BP4Continuity(),
-                        //           (int)msg->FCMsg()->BP4Ignited(),
-                        //           (int)msg->FCMsg()->BP5Continuity(),
-                        //           (int)msg->FCMsg()->BP5Ignited(),
-                        //           (int)msg->FCMsg()->BP6Continuity(),
-                        //           (int)msg->FCMsg()->BP6Ignited(),
-                        //           (int)msg->FCMsg()->BP7Continuity(),
-                        //           (int)msg->FCMsg()->BP7Ignited());
-                        #endif
-                    }
-                    #ifndef JSON_LOGGING
-                    pc.printf("\r\n");
-                    #endif
-                }
-                if (msg->AckReqd()) {
-                    sendAck(msg->FrameID());
-                }
-            } else {
-            }
-        }
-        if (failed) {
-            // pc.printf("[!RSSI=%d, bytes: %d]! Failed Flatbuf
-            // Deserialize\r\n",
-            //           radio.getRSSI(), num_bytes_rxd - 1);
+        const DownlinkMsg *msg = stream_parse_to_downlink(rx_buf + 1, num_bytes_rxd - 1);
+        if (msg != nullptr) {
+            handle_incoming_msg(msg);
         }
     }
 }
 
-bool sendUplinkMsg(const std::string &str, bool with_ack) {
-    builder.Reset();
+void init_leds() {
+    rx_led = 0;
+    tx_led = 0;
+    tx_lock_led = 0;
 
-    uint8_t bps[7] = {0, 0, 0, 0, 0, 0, 0};
-    /* NEED TO ACTUALLY PARSE STR */
+    t_tx_led_on = t.read_ms();
+    t_rx_led_on = t.read_ms();
+
+    sendJsonLog("Leds: Turned off.");
+}
+
+void init_radio() {
+    radio.reset();
+    radio.init();
+    radio.setAESEncryption(ENCRYPT_KEY, strlen(ENCRYPT_KEY));
+    radio.setHighPowerSettings(true);
+    radio.setPowerDBm(20);
+    sendJsonLog("Radio: Initialized.");
+}
+
+void init_inputs() {
+    // Set to active-low using internal pull-up
+    tx_lock_button.mode(PullUp);
+    sendJsonLog("Tx Lock Button: Pulled up");
+}
+
+void update_leds() {
+    if (tx_led.read() == 1 && t.read_ms() - t_tx_led_on > LED_ON_TIME_MS) {
+        tx_led = 0;
+    }
+    if (rx_led.read() == 1 && t.read_ms() - t_rx_led_on > LED_ON_TIME_MS) {
+        rx_led = 0;
+    }
+}
+
+void update_inputs() {
+    if (tx_lock_button) {
+        tx_lock_led = 1;
+    } else {
+        tx_lock_led = 0;
+    }
+}
+
+void periodic_json_log_update() {
+    serial.printf("{ \"timestamp\": -1, \"id\": \"%s\", \"value\": %d}\r\n", COMMS_SENT, total_bytes_sent);
+}
+
+void resend_missing_acks() {
+    for (auto &kv : acks_remaining) {
+        TelecmdMsg &msg = kv.second;
+        radio_transmit(msg.buf.data(), msg.buf.size());
+        ++msg.num_retries;
+        if (msg.num_retries >= MAX_NUM_RETRIES) {
+            acks_remaining.erase(msg.frame_id);
+            sendJsonLog("Failed to send frame " + std::to_string(msg.frame_id) 
+                + ": Exceeded max number of retries.");
+        }
+    }
+}
+
+bool execute_command(const std::string &cmd) {
+    if (line == COMMAND_YES_RETRY) {
+        radio_retry = true;
+        sendJsonLog("Radio: Set to transmit with retry.");
+    } else if (line == COMMAND_NO_RETRY) {
+        radio_retry = false;
+        sendJsonLog("Radio: Set to transmit without retry.");
+    } else  {
+        if (!tx_lock_button) {
+            line += '\n';
+
+            TelecmdMsg msg;
+            msg.frame_id = tx_frame_id;
+            msg.num_retries = 0;
+            if (!parse_to_telecmd_msg(cmd, msg.frame_id, radio_retry, &msg.buf)) {
+                sendJsonLog("Failed to send frame: unable to parse input.");
+                return false;
+            }
+            ++tx_frame_id;
+
+            if (radio_retry) {
+                acks_remaining.insert({msg.frame_id, msg});
+            }
+            radio_transmit(msg.buf.data(), msg.buf.size());
+        } else {
+            sendJsonLog("Failed to send frame: Transmit locked.");
+        }
+    }
+    return true;
+}
+
+bool parse_to_telecmd_msg(const std::string &line, const uint8_t frame_id, const bool ack_req, std::vector<uint8_t> *const out) {
     UplinkType type = UplinkType_FCOff;
-    if (str[0] == 'n') {
+    uint8_t bps[7] = {0, 0, 0, 0, 0, 0, 0};
+
+    if (line[0] == 'n') {
         type = UplinkType_FCOn;
-    } else if (str[0] == 'b') {
+    } else if (line[0] == 'o') {
+        type = UplinkType_FCOff;
+    } else if (line[0] == 'b') {
         type = UplinkType_BlackPowderPulse;
-        #ifndef JSON_LOGGING
-        pc.printf("%s\r\n", str.c_str());
-        #endif
-        if (str.length() >= 8) {
+        if (line.length() >= 8) {
             for (int32_t i = 1; i < 8; ++i) {
-                if (str[i] == '1') {
+                if (line[i] == '1') {
                     bps[i - 1] = 1;
-                } else {
+                } else if (line[i] == '0') {
                     bps[i - 1] = 0;
+                } else {
+                    return false;
                 }
             }
+        } else {
+            return false;
         }
-    } else if (str[0] == 'f') {
-        type = UplinkType_FCOff;
     } else {
-        type = UplinkType_FCOff;
+        return false;
     }
 
-    auto blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
-
-    Offset<UplinkMsg> msg = CreateUplinkMsg(builder, 1, type, blackpowder_offset, frame_id, with_ack);
+    builder.Reset();
+    auto bps_offset = builder.CreateVector(bps, sizeof(bps));
+    Offset<UplinkMsg> msg = CreateUplinkMsg(builder, 1, type, bps_offset, frame_id, ack_req);
     builder.Finish(msg);
 
     const uint8_t bytes = (uint8_t)builder.GetSize();
     builder.Reset();
-    blackpowder_offset = builder.CreateVector(bps, sizeof(bps));
-    msg = CreateUplinkMsg(builder, bytes, type, blackpowder_offset, frame_id, with_ack);
+    bps_offset = builder.CreateVector(bps, sizeof(bps));
+    msg = CreateUplinkMsg(builder, bytes, type, bps_offset, frame_id, ack_req);
     builder.Finish(msg);
 
-    const uint8_t *buf = builder.GetBufferPointer();
+    const uint8_t *const buf = builder.GetBufferPointer();
     const int32_t size = builder.GetSize();
 
-    if (with_ack) {
-        acks_remaining.insert({frame_id, {std::vector<uint8_t>(buf, buf + size), 0}});
-    }
-    radioTx(buf, size);
+    *out = std::vector<uint8_t>(buf, buf + size);
 
-    ++frame_id;
+    return true;
 }
 
-uint8_t ret_buf[FLATBUF_BUF_SIZE];
-const DownlinkMsg *getDownlinkMsgChar(char c) {
-    static uint8_t buffer[FLATBUF_BUF_SIZE];
-    static unsigned int len = 0;
+void radio_transmit(const uint8_t *const buf, const int32_t size) {
+    tx_led = 1;
+    radio.send(buf, size);
+    t_tx_led_on = t.read_ms();
+    total_bytes_sent += size;
+}
 
-    if (len == FLATBUF_BUF_SIZE) {
-        // If at end of buffer, shift and add to end
-        memmove(buffer, buffer + 1, FLATBUF_BUF_SIZE - 1);
-        buffer[FLATBUF_BUF_SIZE - 1] = (uint8_t)c;
-    } else {
-        // Otherwise build up buffer
-        buffer[len++] = (uint8_t)c;
-    }
+const DownlinkMsg *stream_parse_to_downlink(const uint8_t *const buf, const size_t buf_size) {
+    static uint8_t stream[FLATBUF_BUF_SIZE];
+    static size_t stream_len = 0;
 
-    // The verifier will say that buf has a valid message for any length
-    // from actual_length-some number to full buffer length So basically, we
-    // trust the verifier, but verify separately by having a #-bytes field
-    // in the message itself So if the verifier says there's a valid message
-    // in the buffer, we read that message, get the number of bytes that the
-    // message says it should be, and actually process a message of THAT
-    // size.
-    Verifier verifier(buffer, len);
-    if (VerifyDownlinkMsgBuffer(verifier)) {
-        const DownlinkMsg *msg = GetDownlinkMsg(buffer);
-        // The message knows how big it should be
-        const uint8_t expectedBytes = msg->Bytes();
-
-        uint8_t actual_len = len;
-        if (len < expectedBytes) {
-            // The verifier will say we have a valid message even if
-            // we're a few bytes short Just read more characters at
-            // this point by returning early
-            return nullptr;
-        } else if (len > expectedBytes) {
-            // Now we want to verify that the "smaller buffer" with
-            // length equal to the expected number of bytes is
-            // actually a message in its own right (just a double
-            // check basically)
-            Verifier smallerVerifier(buffer, expectedBytes);
-            if (VerifyDownlinkMsgBuffer(smallerVerifier)) {
-                // If it is a message, then make sure we use the
-                // correct (smaller) length
-                actual_len = expectedBytes;
-            } else {
-                // If it isn't valid, then this buffer just has
-                // some malformed messages... continue and let's
-                // get them out of the buffer by reading more
-                return nullptr;
-            }
+    const DownlinkMsg *msg = nullptr;
+    for (size_t i = 0; i < buf_size; ++i) {
+        push_to_stream(buf[i], stream, &stream_len);
+        
+        msg = parse_to_downlink(stream, &stream_len);
+        if (msg != nullptr) {
+            return msg;
         }
-
-        // Now that we've read a valid message, copy it into the output
-        // buffer, then remove it from the input buffer and move
-        // everything else down. Then reduce current buffer length by
-        // the length of the processed message Then clear the rest of
-        // the buffer so that we don't get false positives with the
-        // verifiers
-        memcpy(ret_buf, buffer, actual_len);
-        memmove(buffer, buffer + actual_len, FLATBUF_BUF_SIZE - actual_len);
-        len -= actual_len;
-        // Clear the rest of the buffer
-        memset(buffer + len, 0, FLATBUF_BUF_SIZE - len);
-
-        return GetDownlinkMsg(ret_buf);
     }
     return nullptr;
 }
 
-void resend_msgs() {
-    for (auto &msg : acks_remaining) {
-        tx_led = 1;
-        #ifndef JSON_LOGGING
-        pc.printf("![RESENDING FRAME '%d']!\r\n", (int)msg.first);
-        #endif
-        const std::vector<uint8_t> &vec = std::get<0>(msg.second);
-        radioTx(vec.data(), vec.size());
-        std::get<1>(msg.second) = std::get<1>(msg.second) + 1;
-        if (std::get<1>(msg.second) >= MAX_NUM_RETRIES) {
-            #ifndef JSON_LOGGING
-            pc.printf("![FAILED TO SEND FRAME '%d']!\r\n", msg.first);
-            #endif
-            sendJsonLog("Failed to send frame: Exceeded max number of retries.");
-            acks_remaining.erase(msg.first);
-        }
-    }
-    if (tx_led.read() == 1) {
-        t_tx_led_on = t.read_ms();
+void push_to_stream(const uint8_t b, uint8_t *const buf, size_t *const buf_size) {
+    if (*buf_size == FLATBUF_BUF_SIZE) {
+        memmove(buf, buf + 1, FLATBUF_BUF_SIZE - 1);
+        buf[FLATBUF_BUF_SIZE - 1] = b;
+    } else {
+        buf[*buf_size] = b;
+        ++(*buf_size);
     }
 }
 
-void sendAck(uint8_t frame_id) {
+const DownlinkMsg *parse_to_downlink(uint8_t *const buf, size_t *const buf_size) {
+    // Check if some contiguous sub-sequence from the beginning is a valid 
+    //     (potentially partial) DownlinkMsg
+    Verifier verifier(buf, *buf_size);
+    if (VerifyDownlinkMsgBuffer(verifier)) {
+        const DownlinkMsg *msg = GetDownlinkMsg(buf);
+        const uint8_t expected_num_bytes = msg->Bytes();
+
+        // Now use how big the message was expected to be to reverify
+        uint8_t actual_size = *buf_size;
+        if (*buf_size < expected_num_bytes) {
+            return nullptr;
+        } else if (*buf_size > expected_num_bytes) {
+            Verifier smaller_verifier(buf, expected_num_bytes);
+            if (VerifyDownlinkMsgBuffer(smaller_verifier)) {
+                actual_size = expected_num_bytes;
+            } else {
+                return nullptr;
+            }
+        }
+
+        // Copy valid message to an output buffer and remove relevant bytes from the stream buffer
+        memcpy(out_buf, buf, actual_size);
+        memmove(buf, buf + actual_size, FLATBUF_BUF_SIZE - actual_size);
+        *buf_size -= actual_size;
+        // Clear so that no false positives
+        memset(buf + *buf_size, 0, FLATBUF_BUF_SIZE - *buf_size);
+
+        return GetDownlinkMsg(out_buf);
+    }
+    return nullptr;
+}
+
+void handle_incoming_msg(const DownlinkMsg *const msg) {
+    if (msg->AckReqd()) {
+        send_ack(msg->FrameID());
+    }
+
+    switch (msg->Type()) {
+        case DownlinkType_Ack:
+            handle_acks(msg->FrameID());
+            break;
+        case DownlinkType_StateUpdate:
+            json_log_to_serial(msg);
+            break;
+        default:
+            break;
+    }
+}
+
+void send_ack(const uint8_t frame_id) {
     builder.Reset();
     Offset<UplinkMsg> ack = CreateUplinkMsg(builder, 1, UplinkType_Ack, 0, frame_id, false);
     builder.Finish(ack);
@@ -470,33 +415,51 @@ void sendAck(uint8_t frame_id) {
     builder.Reset();
     ack = CreateUplinkMsg(builder, bytes, UplinkType_Ack, 0, frame_id, false);
     builder.Finish(ack);
-    radioTx(builder.GetBufferPointer(), builder.GetSize());
+    radio_transmit(builder.GetBufferPointer(), builder.GetSize());
 }
 
+void handle_acks(const uint8_t frame_id) {
+    if (acks_remaining.count(frame_id) >= 1) {
+        acks_remaining.erase(frame_id);
+    }
+}
+
+void json_log_to_serial(const DownlinkMsg *const msg) {
+    const uint64_t tstamp = msg->TimeStamp();
+    sendJsonInt(   tstamp,   GS_RSSI,     radio.getRSSI());
+    sendJsonInt(   tstamp,  COMMS_RECD,  msg->Bytes());
+    sendJsonInt(   tstamp,  TPC_STATE,   (int)msg->State());
+    sendJsonInt(   tstamp,  FC_PWRD,     (int)msg->FCPowered());
+    sendJsonString(tstamp,  TPC_GPS,     msg->GPSString()->c_str());
+    sendJsonFloat( tstamp,  TPC_BATV,    BATUINT_TO_FLOAT(msg->BattVoltage()));
+
+    if (msg->FCMsg()) {
+        const FCUpdateMsg *fc = msg->FCMsg();
+        sendJsonInt(  tstamp,  FC_STATE, (int)fc->State());
+        sendJsonFloat(tstamp,  FC_ALT,   fc->Altitude());
+    }
+}
 
 void sendJsonInt(uint64_t timestamp, const std::string &id, int value) {
-    pc.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": %d}\r\n", 
-        timestamp, id.c_str(), value);
+    serial.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": %d}\r\n", timestamp, id.c_str(), value);
 }
 
 void sendJsonFloat(uint64_t timestamp, const std::string &id, float value) {
-    pc.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": %f}\r\n", 
-        timestamp, id.c_str(), value);
+    serial.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": %f}\r\n", timestamp, id.c_str(), value);
 }
 
 void sendJsonString(uint64_t timestamp, const std::string &id, const std::string &value) {
-    pc.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": \"%s\"}\r\n", 
-        timestamp, id.c_str(), value.c_str());
+    serial.printf("{ \"timestamp\": %" PRIu64 ", \"id\": \"%s\", \"value\": \"%s\"}\r\n", timestamp, id.c_str(), value.c_str());
 }
 
 void sendJsonLog(const std::string &value) {
-    pc.printf("{\"timestamp\": -1, \"id\": \"%s\", \"value\": \"%s\"}\r\n",
-        GS_LOG, value.c_str());
+    serial.printf("{\"timestamp\": -1, \"id\": \"%s\", \"value\": \"%s\"}\r\n", GS_LOG, value.c_str());
 }
 
-void radioTx(const uint8_t *const data, const int32_t data_len) {
-    radio.send(data, data_len);
-    total_bytes_sent += data_len;
-    pc.printf("{ \"timestamp\": -1, \"id\": \"%s\", \"value\": %d}\r\n",
-            COMMS_SENT, total_bytes_sent);
+int main() {
+    start();
+    while (true) {
+        loop();
+    }
+    return 0;
 }
